@@ -1,0 +1,901 @@
+:root {
+  --mint: #4AD3C8;
+  --mint-dark: #2BB8AD;
+  --coral: #FF7D89;
+  --coral-dark: #E85968;
+  --yellow: #FFD644;
+  --yellow-dark: #F2AD00;
+  --ink: #273244;
+  --ink-soft: #647188;
+  --shadow-lg: 0 20px 44px rgba(34, 50, 78, 0.14);
+  --shadow-md: 0 8px 22px rgba(34, 50, 78, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: "Apple SD Gothic Neo", "Pretendard", -apple-system, BlinkMacSystemFont, sans-serif;
+  background: linear-gradient(125deg, #FFF7E8 0%, #FFFBF2 45%, #D8F2FF 100%);
+  color: var(--ink);
+}
+
+.hidden { display: none !important; }
+
+/* 세로 화면 안내 (모바일 세로일 때만 표시) */
+.rotate-hint {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: linear-gradient(135deg, #FFF8EA, #DDF3FF);
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+}
+.rotate-card {
+  background: #fff;
+  padding: 32px 28px;
+  border-radius: 28px;
+  box-shadow: var(--shadow-lg);
+}
+.rotate-icon {
+  font-size: 52px;
+  margin-bottom: 12px;
+  animation: tilt 1.8s ease-in-out infinite;
+}
+@keyframes tilt {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-90deg); }
+}
+@media (max-width: 760px) and (orientation: portrait) {
+  .rotate-hint { display: flex; }
+}
+
+/* 앱 쉘 (아이폰 Safe Area 대응) */
+.app-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.stage-viewport {
+  position: absolute;
+  inset: 0;
+  background: #1d2432;
+}
+#camera-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+#game-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 화면 공통 */
+.screen {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  padding: max(16px, env(safe-area-inset-top)) max(22px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(28px, env(safe-area-inset-left));
+  z-index: 10;
+}
+.screen.active { display: flex; }
+.screen-overlay { pointer-events: none; }
+.screen-overlay button,
+.screen-overlay .clear-card { pointer-events: auto; }
+
+/* 장식 비눗방울 & 반짝이 (시안 1번 스타일) */
+.floating-bubbles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.bubble {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 28%, rgba(255,255,255,0.95), rgba(186,236,255,0.28) 55%, rgba(255,204,228,0.25) 100%);
+  border: 2px solid rgba(255,255,255,0.75);
+  box-shadow: inset 0 0 12px rgba(255,255,255,0.65);
+  animation: floatUp 6.5s ease-in-out infinite;
+}
+.b1 { width: 58px; height: 58px; left: 22%; top: 15%; }
+.b2 { width: 32px; height: 32px; left: 79%; top: 38%; animation-delay: 1.4s; }
+.b3 { width: 42px; height: 42px; left: 17%; top: 44%; animation-delay: 2.6s; }
+.b4 { width: 24px; height: 24px; left: 73%; top: 20%; animation-delay: 0.7s; }
+.sparkle {
+  position: absolute;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 18px;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.9);
+  animation: twinkle 3s ease-in-out infinite;
+}
+.sp1 { left: 32%; top: 30%; }
+.sp2 { left: 68%; top: 32%; animation-delay: 1s; font-size: 14px; }
+.sp3 { left: 50%; top: 46%; animation-delay: 2s; font-size: 12px; }
+@keyframes floatUp {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-12px); }
+}
+@keyframes twinkle {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+/* 상단 바 */
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 6;
+  min-height: 48px;
+}
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.icon-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #4A5A70;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.icon-btn:active { transform: scale(0.92); }
+.glass-btn {
+  background: rgba(255, 255, 255, 0.56);
+  border: 1.5px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 6px 16px rgba(60, 100, 140, 0.1);
+  backdrop-filter: blur(12px);
+}
+.white-btn {
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(45, 70, 110, 0.12);
+}
+.glass-dark {
+  background: rgba(24, 32, 46, 0.62);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  backdrop-filter: blur(8px);
+}
+
+/* ================================================================
+ * 1. 홈 화면 (시안 1번 1:1 매칭)
+ * ================================================================ */
+.screen-home {
+  background: linear-gradient(115deg, #FFF6E6 0%, #FFFBF2 46%, #CBEDFF 100%);
+}
+.home-center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 2;
+  margin-top: -16px;
+}
+.app-logo {
+  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
+  margin: 0;
+  font-size: clamp(42px, 6.2vw, 66px);
+  font-weight: 400;
+  letter-spacing: 1px;
+  line-height: 1.08;
+  filter: drop-shadow(0 6px 14px rgba(55, 72, 100, 0.16));
+  -webkit-text-stroke: 7px #FFFFFF;
+  paint-order: stroke fill;
+}
+.app-logo .c1 { color: #3AB4F2; }
+.app-logo .c2 { color: #FFBE2E; }
+.app-logo .c3 { color: #47D1A0; }
+.app-logo .c4 { color: #4CC9C0; }
+.app-logo .c5 { color: #FF7582; }
+.app-logo .gap { display: inline-block; width: 10px; }
+
+.mascots-stage {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: clamp(36px, 9vw, 130px);
+  margin-top: -4px;
+  position: relative;
+}
+.mascot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.25s ease;
+  animation: bob 2.9s ease-in-out infinite;
+}
+.mascot img {
+  height: clamp(160px, 42vh, 270px);
+  width: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 12px 18px rgba(45, 70, 95, 0.14));
+}
+.mascot-popo { animation-delay: 0.45s; }
+.mascot-popo img {
+  height: clamp(148px, 39vh, 250px);
+}
+.mascot-shadow {
+  width: 68%;
+  height: 14px;
+  background: radial-gradient(ellipse at center, rgba(60, 75, 95, 0.16) 0%, rgba(60, 75, 95, 0) 70%);
+  margin-top: -10px;
+}
+.mascot.hidden-p2 {
+  opacity: 0;
+  transform: scale(0.6) translateX(30px);
+  pointer-events: none;
+  width: 0;
+  overflow: hidden;
+}
+@keyframes bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-9px); }
+}
+
+/* 홈 하단 컨트롤: 시안 1번처럼 두 캐릭터 발 사이 중앙에 겹쳐 깔끔히 배치 */
+.home-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: -54px;
+  z-index: 4;
+}
+.player-toggle {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 5px;
+  border-radius: 999px;
+  box-shadow: 0 8px 22px rgba(40, 62, 95, 0.14);
+  gap: 4px;
+}
+.toggle-opt {
+  border: none;
+  background: transparent;
+  padding: 7px 20px;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #5C687E;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+.toggle-opt.active {
+  background: linear-gradient(135deg, #4FD5C9, #3CC3B7);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(60, 195, 183, 0.4);
+}
+.mini-heads {
+  display: inline-flex;
+  align-items: center;
+}
+.mini-heads img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+.mini-heads img + img { margin-left: -4px; }
+
+.btn-primary-yellow {
+  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
+  border: 3px solid rgba(255, 255, 255, 0.65);
+  background: linear-gradient(180deg, #FFE666 0%, #FFC400 55%, #F5A800 100%);
+  color: #fff;
+  font-size: clamp(24px, 3vw, 30px);
+  font-weight: 400;
+  padding: 10px 54px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 7px 0 #DB8F00, 0 14px 26px rgba(242, 173, 0, 0.36), inset 0 3px 4px rgba(255, 255, 255, 0.65);
+  text-shadow: 0 2px 3px rgba(175, 100, 0, 0.38);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.btn-primary-yellow:active {
+  transform: translateY(4px);
+  box-shadow: 0 3px 0 #DB8F00, 0 8px 14px rgba(242, 173, 0, 0.3);
+}
+.btn-secondary-mint {
+  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
+  border: 3px solid rgba(255, 255, 255, 0.65);
+  background: linear-gradient(180deg, #74EAE0 0%, #3FC8BD 100%);
+  color: #fff;
+  font-size: clamp(20px, 2.4vw, 24px);
+  padding: 10px 34px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 6px 0 #269E95, 0 12px 20px rgba(63, 200, 189, 0.32);
+  transition: transform 0.12s ease;
+}
+.btn-secondary-mint:active { transform: translateY(4px); }
+
+/* ================================================================
+ * 2. 놀이 고르기 화면 (시안 2번 1:1 매칭)
+ * ================================================================ */
+.screen-select {
+  background: linear-gradient(180deg, #C7EBFF 0%, #EAF7FF 52%, #FFF9EB 100%);
+  overflow: hidden;
+}
+.screen-title {
+  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
+  margin: 0;
+  font-size: clamp(26px, 3.4vw, 36px);
+  font-weight: 400;
+  color: var(--ink);
+  letter-spacing: 0.5px;
+}
+.pill-badge {
+  border: none;
+  background: rgba(164, 198, 224, 0.45);
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 800;
+  padding: 10px 20px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+.cards-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(14px, 2.4vw, 26px);
+  align-items: center;
+  max-width: 920px;
+  width: 100%;
+  margin: 0 auto;
+  z-index: 2;
+}
+.game-card {
+  position: relative;
+  background: #fff;
+  border: 4px solid #fff;
+  border-radius: 30px;
+  padding: 12px 12px 18px;
+  box-shadow: 0 14px 32px rgba(55, 86, 125, 0.12);
+  cursor: pointer;
+  text-align: center;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.game-card:hover,
+.game-card.featured {
+  border-color: #FFD84D;
+  box-shadow: 0 0 0 6px rgba(255, 216, 77, 0.28), 0 18px 36px rgba(242, 183, 5, 0.22);
+  transform: translateY(-6px) scale(1.03);
+}
+.game-card:active { transform: scale(0.97); }
+.card-art-img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 22px;
+  overflow: hidden;
+  margin-bottom: 12px;
+  background: #FFF9E6;
+}
+.card-art-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.card-title {
+  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
+  font-size: clamp(22px, 2.6vw, 28px);
+  font-weight: 400;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.card-meta {
+  font-size: clamp(13px, 1.6vw, 16px);
+  font-weight: 800;
+  color: var(--ink-soft);
+}
+.wii-pointer {
+  position: absolute;
+  right: -8px;
+  bottom: -14px;
+  font-size: 32px;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.2));
+  animation: tapBob 1.6s ease-in-out infinite;
+}
+@keyframes tapBob {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-4px, -6px); }
+}
+.select-tip {
+  text-align: center;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #3D7B78;
+  z-index: 2;
+}
+.select-peeking-mascots {
+  position: absolute;
+  right: 18px;
+  bottom: -16px;
+  display: flex;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 3;
+}
+.select-peeking-mascots .peek-momo {
+  width: clamp(72px, 10vw, 108px);
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.14));
+}
+.select-peeking-mascots .peek-popo {
+  width: clamp(78px, 11vw, 118px);
+  margin-left: -18px;
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.14));
+}
+
+/* ================================================================
+ * 3. 인원 확인 & 카운트다운 오버레이 (시안 3번 1:1 매칭)
+ * ================================================================ */
+.ready-top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ready-left-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.live-pill {
+  background: rgba(24, 32, 46, 0.72);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-weight: 800;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  backdrop-filter: blur(8px);
+}
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #FF4D5A;
+  animation: blink 1.2s infinite;
+}
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.skip-pill {
+  border: none;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ink);
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-weight: 800;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+}
+.ready-banner {
+  align-self: center;
+  margin-top: -36px;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 12px 28px;
+  border-radius: 999px;
+  font-size: clamp(16px, 2.3vw, 22px);
+  font-weight: 800;
+  color: var(--ink);
+  box-shadow: 0 12px 28px rgba(25, 38, 60, 0.18);
+}
+.countdown-ring {
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  transform: translate(-50%, -50%);
+  width: 144px;
+  height: 144px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 232, 120, 0.25), rgba(255, 196, 0, 0.08));
+  border: 11px solid #FFD43B;
+  box-shadow: 0 0 40px rgba(255, 212, 59, 0.78), inset 0 0 22px rgba(255, 255, 255, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+#countdown-num {
+  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
+  font-size: 84px;
+  color: #FFE45E;
+  -webkit-text-stroke: 3px #D98600;
+  text-shadow: 0 6px 16px rgba(160, 88, 0, 0.55);
+}
+.camera-status-pill {
+  position: absolute;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 28, 42, 0.62);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 999px;
+}
+
+/* ================================================================
+ * 4. 인게임 미니멀 투영 HUD (시안 4번 1:1 매칭)
+ * ================================================================ */
+.ingame-hud {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.pause-btn {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.52);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.14);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+}
+.lock-mini {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  font-size: 12px;
+  background: #fff;
+  border-radius: 50%;
+  padding: 2px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+.hold-ring {
+  position: absolute;
+  inset: -2px;
+  transform: rotate(-90deg);
+  pointer-events: none;
+}
+.hold-ring circle {
+  fill: none;
+  stroke: var(--coral);
+  stroke-width: 4;
+  stroke-dasharray: 120;
+  stroke-dashoffset: 120;
+  transition: stroke-dashoffset 0.08s linear;
+}
+.progress-dots {
+  display: flex;
+  gap: 9px;
+  background: rgba(90, 102, 120, 0.42);
+  padding: 9px 18px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+.pdot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.36);
+  transition: background 0.25s ease, transform 0.25s ease;
+}
+.pdot.done {
+  background: #FFFFFF;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.85);
+  transform: scale(1.12);
+}
+.score-pill {
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 999px;
+  padding: 7px 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 26px;
+  font-weight: 900;
+  color: #6B4B35;
+  box-shadow: 0 10px 24px rgba(30, 42, 60, 0.16);
+  transition: transform 0.15s ease;
+}
+.score-pill.bump { transform: scale(1.18); }
+
+.ingame-callout {
+  align-self: center;
+  margin-top: 10px;
+  background: rgba(255, 96, 106, 0.94);
+  color: #fff;
+  border: 3px solid #fff;
+  padding: 10px 28px;
+  border-radius: 999px;
+  font-size: clamp(18px, 2.5vw, 25px);
+  font-weight: 900;
+  box-shadow: var(--shadow-lg);
+}
+
+/* ================================================================
+ * 5. 클리어 화면
+ * ================================================================ */
+.screen-clear {
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 30, 48, 0.28);
+  backdrop-filter: blur(5px);
+}
+.clear-card {
+  background: rgba(255, 255, 255, 0.97);
+  border: 5px solid var(--yellow);
+  border-radius: 34px;
+  padding: 22px 42px 26px;
+  text-align: center;
+  box-shadow: var(--shadow-lg);
+  animation: popIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.clear-mascots {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: -54px;
+  margin-bottom: 4px;
+}
+.clear-mascots img {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.15));
+}
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.75); }
+  to { opacity: 1; transform: scale(1); }
+}
+.clear-stars {
+  font-size: 46px;
+  letter-spacing: 8px;
+  margin-bottom: 4px;
+}
+.clear-title {
+  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
+  margin: 0 0 6px;
+  font-size: clamp(28px, 3.8vw, 40px);
+  font-weight: 400;
+}
+.clear-sub {
+  margin: 0 0 20px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.clear-actions {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* ================================================================
+ * 6. 미니멀 부모님 설정 모달 (시안 5번 1:1 매칭)
+ * ================================================================ */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(22, 32, 48, 0.36);
+  backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.settings-card, .pause-card {
+  position: relative;
+  background: #fff;
+  width: min(550px, 94vw);
+  border-radius: 32px;
+  padding: 22px 28px 24px;
+  box-shadow: 0 24px 54px rgba(24, 38, 64, 0.2);
+}
+.pause-card {
+  width: min(400px, 90vw);
+  text-align: center;
+}
+.pause-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 18px;
+}
+.settings-header {
+  display: grid;
+  grid-template-columns: 36px 1fr 36px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.settings-header h2 {
+  margin: 0;
+  text-align: center;
+  font-size: 24px;
+  font-weight: 900;
+  color: var(--ink);
+}
+.close-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: #EBEEF3;
+  color: #6E7A8E;
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.settings-list {
+  display: flex;
+  flex-direction: column;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 0;
+  border-bottom: 1px solid #EEF2F6;
+  gap: 12px;
+}
+.setting-row:last-child { border-bottom: none; }
+.setting-label {
+  font-size: 16px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.s-ic {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #EFF2F7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+.seg-control {
+  display: inline-flex;
+  background: #EEF2F7;
+  padding: 4px;
+  border-radius: 999px;
+  gap: 3px;
+}
+.seg-control button {
+  border: none;
+  background: transparent;
+  padding: 7px 18px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+.seg-control.seg-3 button { padding: 7px 13px; }
+.seg-control button.active {
+  background: #42C5DC;
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(66, 197, 220, 0.35);
+}
+.ios-switch {
+  position: relative;
+  width: 56px;
+  height: 32px;
+}
+.ios-switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute;
+  inset: 0;
+  background: #D8E0EA;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+.slider::before {
+  content: "";
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
+  transition: 0.2s;
+}
+.ios-switch input:checked + .slider { background: #34C759; }
+.ios-switch input:checked + .slider::before { transform: translateX(24px); }
+
+.sound-tv-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sound-tv-group input[type="range"] {
+  width: 80px;
+  accent-color: #42C5DC;
+}
+.tv-pill {
+  border: 1.5px solid #DCE3EC;
+  background: #F7F9FC;
+  padding: 7px 13px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink);
+  cursor: pointer;
+}
+.tv-guide-tip {
+  margin-top: 12px;
+  background: #EFFBFF;
+  border: 1.5px solid #B8E7F5;
+  color: #1F5B70;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.settings-peeking-mascots {
+  position: absolute;
+  right: -12px;
+  bottom: -24px;
+  display: flex;
+  align-items: flex-end;
+  pointer-events: none;
+}
+.settings-peeking-mascots .peek-sm-momo {
+  width: 68px;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.16));
+}
+.settings-peeking-mascots .peek-sm-popo {
+  width: 72px;
+  margin-left: -14px;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.16));
+}
