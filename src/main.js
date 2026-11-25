@@ -1,6 +1,7 @@
 import { SoundEngine } from "./sound.js";
 import { PoseTracker } from "./tracker.js";
 import { MiniGameEngine } from "./games.js";
+import { PixiGameRenderer } from "./pixiRenderer.js";
 
 const STORAGE_KEY = "pangpang_friends_settings_v1";
 
@@ -9,6 +10,7 @@ const DEFAULT_SETTINGS = {
   quietMode: true,
   speed: "normal",
   volume: 80,
+  devMode: false,
 };
 
 function loadSettings() {
@@ -58,6 +60,7 @@ class PangPangApp {
       viewport: document.getElementById("stage-viewport"),
       video: document.getElementById("camera-video"),
       canvas: document.getElementById("game-canvas"),
+      pixiLayer: document.getElementById("pixi-layer"),
       screens: {
         home: document.getElementById("screen-home"),
         select: document.getElementById("screen-select"),
@@ -65,10 +68,13 @@ class PangPangApp {
         ingame: document.getElementById("screen-ingame"),
         clear: document.getElementById("screen-clear"),
       },
+      homeMascots: document.getElementById("home-mascots"),
+      mascotMomo: document.getElementById("mascot-momo"),
       mascotPopo: document.getElementById("mascot-popo"),
       homeToggle1p: document.getElementById("home-toggle-1p"),
       homeToggle2p: document.getElementById("home-toggle-2p"),
-      selectPlayerBadge: document.getElementById("select-player-badge"),
+      selectToggle1p: document.getElementById("select-toggle-1p"),
+      selectToggle2p: document.getElementById("select-toggle-2p"),
       noiseBanner: document.getElementById("noise-mode-banner"),
       freezeMeta: document.getElementById("freeze-meta"),
       readyLiveLabel: document.getElementById("ready-live-label"),
@@ -87,11 +93,14 @@ class PangPangApp {
       setQuiet: document.getElementById("set-quiet"),
       setSpeed: document.getElementById("set-speed"),
       setVolume: document.getElementById("set-volume"),
+      setDevMode: document.getElementById("set-dev-mode"),
       tvGuideTip: document.getElementById("tv-guide-tip"),
       pauseBtn: document.getElementById("btn-pause"),
     };
 
     this.ctx = this.el.canvas.getContext("2d");
+    this.pixi = new PixiGameRenderer(this.el.pixiLayer);
+    this.pixi.init();
 
     this.tracker = new PoseTracker(this.el.video, (msg) => {
       this.el.cameraStatusPill.textContent = msg;
@@ -112,12 +121,24 @@ class PangPangApp {
           this.el.progressDots.appendChild(d);
         }
       },
-      onCallout: (text) => {
+      onCallout: (text, autoHideMs = 0) => {
+        clearTimeout(this.calloutHideTimer);
+        clearTimeout(this.calloutFadeTimer);
         if (!text) {
           this.el.ingameCallout.classList.add("hidden");
+          this.el.ingameCallout.classList.remove("fade-out");
         } else {
           this.el.ingameCallout.textContent = text;
-          this.el.ingameCallout.classList.remove("hidden");
+          this.el.ingameCallout.classList.remove("hidden", "fade-out");
+          if (autoHideMs > 0) {
+            this.calloutFadeTimer = setTimeout(() => {
+              this.el.ingameCallout.classList.add("fade-out");
+            }, autoHideMs);
+            this.calloutHideTimer = setTimeout(() => {
+              this.el.ingameCallout.classList.add("hidden");
+              this.el.ingameCallout.classList.remove("fade-out");
+            }, autoHideMs + 480);
+          }
         }
       },
       onFinish: (summary) => {
@@ -138,6 +159,7 @@ class PangPangApp {
     this.el.canvas.width = Math.floor(window.innerWidth * dpr);
     this.el.canvas.height = Math.floor(window.innerHeight * dpr);
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (this.pixi) this.pixi.resize(window.innerWidth, window.innerHeight);
   }
 
   bindEvents() {
@@ -147,6 +169,14 @@ class PangPangApp {
         this.settings.players = Number(btn.dataset.players);
         saveSettings(this.settings);
         this.syncSettingsUI();
+      });
+    });
+
+    // 홈 캐릭터를 톡톡 건드리면 점프 + 귀여운 효과음!
+    [this.el.mascotMomo, this.el.mascotPopo].forEach((m, idx) => {
+      m.addEventListener("click", () => {
+        this.sound.playPop(idx * 2 + 1);
+        this.triggerMascotHop(m);
       });
     });
 
@@ -169,11 +199,14 @@ class PangPangApp {
       this.showScreen("home");
     });
 
-    this.el.selectPlayerBadge.addEventListener("click", () => {
-      this.sound.playClick();
-      this.settings.players = this.settings.players === 2 ? 1 : 2;
-      saveSettings(this.settings);
-      this.syncSettingsUI();
+    // Select screen 1P / 2P segmented toggle
+    [this.el.selectToggle1p, this.el.selectToggle2p].forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.sound.playClick();
+        this.settings.players = Number(btn.dataset.players);
+        saveSettings(this.settings);
+        this.syncSettingsUI();
+      });
     });
 
     document.querySelectorAll(".game-card").forEach((card) => {
@@ -238,45 +271,41 @@ class PangPangApp {
       this.sound.setVolume(this.settings.volume / 100);
       saveSettings(this.settings);
     });
+    this.el.setDevMode.addEventListener("change", () => {
+      this.sound.playClick();
+      this.settings.devMode = this.el.setDevMode.checked;
+      saveSettings(this.settings);
+      // 모드 전환 시 다음 게임 진입 때 카메라/마우스 트래커 재초기화
+      if (this.settings.devMode) {
+        this.tracker.stop();
+        this.tracker.mode = "pointer";
+      }
+      this.cameraReady = false;
+      this.syncSettingsUI();
+    });
     document.getElementById("btn-tv-guide").addEventListener("click", () => {
       this.sound.playClick();
       this.el.tvGuideTip.classList.toggle("hidden");
     });
 
-    // Parent hold-to-pause (0.65s hold)
-    let holdTimer = null;
-    const holdCircle = this.el.pauseBtn.querySelector(".hold-ring circle");
-    const startHold = () => {
-      let progress = 0;
-      clearInterval(holdTimer);
-      holdTimer = setInterval(() => {
-        progress += 0.1;
-        holdCircle.style.strokeDashoffset = String(120 * (1 - Math.min(1, progress)));
-        if (progress >= 1) {
-          clearInterval(holdTimer);
-          holdCircle.style.strokeDashoffset = "120";
-          this.paused = true;
-          this.sound.stopBgm();
-          this.el.modalPause.classList.remove("hidden");
-        }
-      }, 65);
-    };
-    const cancelHold = () => {
-      clearInterval(holdTimer);
-      holdCircle.style.strokeDashoffset = "120";
-    };
-    this.el.pauseBtn.addEventListener("pointerdown", startHold);
-    this.el.pauseBtn.addEventListener("pointerup", cancelHold);
-    this.el.pauseBtn.addEventListener("pointerleave", cancelHold);
+    // 즉시 클릭으로 바로 일시정지!
+    this.el.pauseBtn.addEventListener("click", () => {
+      this.sound.playClick();
+      this.paused = true;
+      this.sound.pauseBgm();
+      this.el.modalPause.classList.remove("hidden");
+    });
 
     document.getElementById("btn-resume").addEventListener("click", () => {
       this.sound.playClick();
       this.paused = false;
       this.el.modalPause.classList.add("hidden");
+      this.sound.resumeBgm();
     });
     document.getElementById("btn-quit-to-select").addEventListener("click", () => {
       this.sound.playClick();
       this.paused = false;
+      this.sound.setBgmAllowed(false);
       this.engine.stop();
       this.el.modalPause.classList.add("hidden");
       this.showScreen("select");
@@ -301,20 +330,35 @@ class PangPangApp {
     window.addEventListener("pointerdown", (e) => updatePointer(e.clientX, e.clientY));
   }
 
+  triggerMascotHop(node) {
+    if (!node) return;
+    node.classList.remove("happy-hop");
+    void node.offsetWidth;
+    node.classList.add("happy-hop");
+    setTimeout(() => node.classList.remove("happy-hop"), 560);
+  }
+
   syncSettingsUI() {
     const p = this.settings.players;
     this.el.homeToggle1p.classList.toggle("active", p === 1);
     this.el.homeToggle2p.classList.toggle("active", p === 2);
+    this.el.homeMascots.classList.toggle("single-player", p === 1);
     this.el.mascotPopo.classList.toggle("hidden-p2", p === 1);
-    this.el.selectPlayerBadge.textContent = `${p}인`;
-    this.el.readyLiveLabel.textContent = `LIVE · ${p}P`;
+    this.el.selectToggle1p.classList.toggle("active", p === 1);
+    this.el.selectToggle2p.classList.toggle("active", p === 2);
+    this.el.readyLiveLabel.textContent = this.settings.devMode ? `🛠️ DEV · ${p}P` : `LIVE · ${p}P`;
 
     this.el.setPlayers.querySelectorAll("button").forEach((b) => {
       b.classList.toggle("active", Number(b.dataset.val) === p);
     });
     this.el.setQuiet.checked = this.settings.quietMode;
+    this.el.setDevMode.checked = Boolean(this.settings.devMode);
     this.el.noiseBanner.classList.toggle("hidden", !this.settings.quietMode);
-    this.el.freezeMeta.textContent = this.settings.quietMode ? "🔥 살살" : "🔥🔥🔥 힘껏";
+    const flameSvg =
+      '<svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>';
+    this.el.freezeMeta.innerHTML = this.settings.quietMode
+      ? `<span class="intensity-pill level-1" title="운동 강도"><span class="flames">${flameSvg}</span>살살</span>`
+      : `<span class="intensity-pill level-3" title="운동 강도"><span class="flames">${flameSvg}${flameSvg}${flameSvg}</span>힘껏</span>`;
 
     this.el.setSpeed.querySelectorAll("button").forEach((b) => {
       b.classList.toggle("active", b.dataset.val === this.settings.speed);
@@ -324,12 +368,20 @@ class PangPangApp {
 
   showScreen(name) {
     this.screen = name;
+    // 인게임 화면을 벗어나면 무조건 BGM 및 게임 루프 타이머 완전 차단!
+    const isPlaying = name === "ingame";
+    this.sound.setBgmAllowed(isPlaying);
+    if (!isPlaying && name !== "clear") {
+      this.engine.stop();
+    }
+
     Object.entries(this.el.screens).forEach(([k, node]) => {
       node.classList.toggle("active", k === name || (name === "countdown" && k === "ready"));
     });
 
     const usesCamera = ["ready", "countdown", "ingame", "clear"].includes(name);
     this.el.viewport.classList.toggle("hidden", !usesCamera);
+    this.pixi.setVisible(["ingame", "clear"].includes(name));
   }
 
   async enterReadyScreen() {
@@ -342,7 +394,7 @@ class PangPangApp {
     this.showScreen("ready");
 
     if (!this.cameraReady) {
-      await this.tracker.init(this.settings.players);
+      await this.tracker.init(this.settings.players, { forcePointer: Boolean(this.settings.devMode) });
       this.cameraReady = true;
     }
   }
@@ -499,13 +551,9 @@ class PangPangApp {
   }
 
   drawFallbackBackdrop(w, h) {
+    // 게임에 방해되지 않는 초미니멀 뉴트럴 배경 (개발자/마우스 테스트 모드)
     const ctx = this.ctx;
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, "#F9F2E4");
-    grad.addColorStop(0.7, "#EFE2CD");
-    grad.addColorStop(0.7, "#DFBE92");
-    grad.addColorStop(1, "#D2AA77");
-    ctx.fillStyle = grad;
+    ctx.fillStyle = "#F7F9FC";
     ctx.fillRect(0, 0, w, h);
   }
 
@@ -544,7 +592,11 @@ class PangPangApp {
         if (!this.paused) {
           this.engine.update(dt, players, w, h);
         }
-        this.engine.render(this.ctx, players, w, h);
+        if (this.pixi.ready) {
+          this.pixi.renderState(this.engine, players, w, h);
+        } else {
+          this.engine.renderFallback2D(this.ctx, players, w, h);
+        }
       }
     }
 

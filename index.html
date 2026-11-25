@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="icon" type="image/png" href="./assets/app_icon.png" />
+  <link rel="apple-touch-icon" href="./assets/app_icon.png" />
   <title>팡팡 프렌즈 · 몸으로 즐기는 유아 모션 게임</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -23,24 +25,32 @@
 
   <!-- 메인 앱 컨테이너 (아이폰 가로 / TV 16:9 최적화) -->
   <div id="app" class="app-shell">
-    <!-- 백그라운드 카메라 + 게임 캔버스 (Ready / Countdown / In-Game / Clear 공용) -->
+    <!-- 백그라운드 카메라 + 게임 캔버스 + PixiJS v8 WebGL 레이어 -->
     <div id="stage-viewport" class="stage-viewport hidden">
       <video id="camera-video" playsinline autoplay muted></video>
       <canvas id="game-canvas"></canvas>
+      <div id="pixi-layer" class="pixi-layer"></div>
     </div>
 
     <!-- ================================================================
-         1. 홈 / 시작 화면 (Home Screen — 시안 1번 1:1 구현)
+         1. 홈 / 시작 화면 (Home Screen — 시안 1번 1:1 구현 + 은은한 비눗방울)
          ================================================================ -->
     <section id="screen-home" class="screen screen-home active">
+      <!-- 시안과 동일한 크림→스카이 배경 위로 은은하게 올라가는 무지개 비눗방울 -->
       <div class="floating-bubbles" aria-hidden="true">
         <span class="bubble b1"></span>
         <span class="bubble b2"></span>
         <span class="bubble b3"></span>
         <span class="bubble b4"></span>
+        <span class="bubble b5"></span>
+        <span class="bubble b6"></span>
+        <span class="bubble b7"></span>
+        <span class="bubble b8"></span>
         <span class="sparkle sp1">✦</span>
         <span class="sparkle sp2">✦</span>
         <span class="sparkle sp3">✦</span>
+        <span class="sparkle sp4">✦</span>
+        <span class="sparkle sp5">✦</span>
       </div>
 
       <header class="top-bar home-top-bar">
@@ -62,19 +72,18 @@
       </header>
 
       <main class="home-center">
-        <h1 class="app-logo" aria-label="팡팡 프렌즈">
-          <span class="c1">팡</span><span class="c2">팡</span>
-          <span class="gap"></span>
-          <span class="c3">프</span><span class="c4">렌</span><span class="c5">즈</span>
-        </h1>
+        <!-- 시안 1번과 1:1 동일한 3D 볼륨 스티커 로고 -->
+        <div class="app-logo-wrap" role="heading" aria-level="1" aria-label="팡팡 프렌즈">
+          <img src="./assets/logo_pangpang.png" alt="팡팡 프렌즈" class="app-logo-img" draggable="false" />
+        </div>
 
         <div class="mascots-stage" id="home-mascots">
           <div class="mascot mascot-momo" id="mascot-momo">
-            <img src="./assets/momo.png" alt="모모 캐릭터" draggable="false" />
+            <img src="./assets/momo_idle.webp" alt="모모 캐릭터" draggable="false" />
             <div class="mascot-shadow"></div>
           </div>
           <div class="mascot mascot-popo" id="mascot-popo">
-            <img src="./assets/popo.png" alt="포포 캐릭터" draggable="false" />
+            <img src="./assets/popo_idle.webp" alt="포포 캐릭터" draggable="false" />
             <div class="mascot-shadow"></div>
           </div>
         </div>
@@ -112,7 +121,18 @@
         <h2 class="screen-title">놀이 고르기</h2>
 
         <div class="top-actions">
-          <button id="select-player-badge" class="pill-badge" title="인원 전환">2인</button>
+          <div class="mini-player-toggle" role="group" aria-label="플레이 인원 전환">
+            <button class="mini-opt" data-players="1" id="select-toggle-1p">
+              <img src="./assets/momo_head.png" alt="" /> 1인
+            </button>
+            <button class="mini-opt active" data-players="2" id="select-toggle-2p">
+              <span class="mini-heads">
+                <img src="./assets/momo_head.png" alt="" />
+                <img src="./assets/popo_head.png" alt="" />
+              </span>
+              2인
+            </button>
+          </div>
           <button id="btn-open-settings-select" class="icon-btn white-btn" aria-label="설정">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/>
@@ -128,8 +148,15 @@
             <img src="./assets/card_fruit.jpg" alt="과일 팡팡" draggable="false" />
           </div>
           <div class="card-title">과일 팡팡</div>
-          <div class="card-meta">🔥🔥 보통 <span class="hand-wave-ic">👋</span></div>
-          <span class="wii-pointer" aria-hidden="true">👆</span>
+          <div class="card-meta">
+            <span class="intensity-pill level-2" title="운동 강도">
+              <span class="flames" aria-hidden="true">
+                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+              </span>
+              보통
+            </span>
+          </div>
         </button>
 
         <button class="game-card" data-game="balloon">
@@ -137,7 +164,14 @@
             <img src="./assets/card_balloon.jpg" alt="풍선 배구" draggable="false" />
           </div>
           <div class="card-title">풍선 배구</div>
-          <div class="card-meta">🔥 살살</div>
+          <div class="card-meta">
+            <span class="intensity-pill level-1" title="운동 강도">
+              <span class="flames" aria-hidden="true">
+                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+              </span>
+              살살
+            </span>
+          </div>
         </button>
 
         <button class="game-card" data-game="freeze">
@@ -145,7 +179,16 @@
             <img src="./assets/card_freeze.jpg" alt="얼음 땡!" draggable="false" />
           </div>
           <div class="card-title">얼음 땡!</div>
-          <div class="card-meta" id="freeze-meta">🔥🔥🔥 힘껏</div>
+          <div class="card-meta" id="freeze-meta">
+            <span class="intensity-pill level-3" title="운동 강도">
+              <span class="flames" aria-hidden="true">
+                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+              </span>
+              힘껏
+            </span>
+          </div>
         </button>
       </main>
 
@@ -188,12 +231,8 @@
          ================================================================ -->
     <section id="screen-ingame" class="screen screen-overlay">
       <div class="ingame-hud">
-        <button id="btn-pause" class="pause-btn" title="길게 눌러 일시정지">
+        <button id="btn-pause" class="pause-btn" title="일시정지" aria-label="일시정지">
           <span class="pause-icon">⏸</span>
-          <span class="lock-mini">🔒</span>
-          <svg class="hold-ring" viewBox="0 0 44 44">
-            <circle cx="22" cy="22" r="19" />
-          </svg>
         </button>
 
         <div class="progress-dots" id="progress-dots" aria-label="진행도"></div>
@@ -278,6 +317,15 @@
               <input type="range" id="set-volume" min="0" max="100" value="80" aria-label="볼륨" />
               <button id="btn-tv-guide" class="tv-pill">📺 AirPlay TV 연결</button>
             </div>
+          </div>
+
+          <!-- 5) 개발자 모드 (카메라 없이 마우스 테스트) -->
+          <div class="setting-row">
+            <div class="setting-label"><span class="s-ic">🛠️</span> 개발자 모드 <span class="setting-sub">(마우스 테스트)</span></div>
+            <label class="ios-switch">
+              <input type="checkbox" id="set-dev-mode" />
+              <span class="slider"></span>
+            </label>
           </div>
         </div>
 

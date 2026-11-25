@@ -90,6 +90,18 @@ html, body {
   height: 100%;
   display: block;
 }
+.pixi-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.pixi-layer canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
 
 /* 화면 공통 */
 .screen {
@@ -105,42 +117,55 @@ html, body {
 .screen-overlay button,
 .screen-overlay .clear-card { pointer-events: auto; }
 
-/* 장식 비눗방울 & 반짝이 (시안 1번 스타일) */
+/* 장식 비눗방울 & 반짝이 (시안 1번 스타일: 은은하게 위로 떠오르는 무지개 거품) */
 .floating-bubbles {
   position: absolute;
   inset: 0;
   pointer-events: none;
   overflow: hidden;
+  z-index: 1;
 }
 .bubble {
   position: absolute;
+  bottom: -90px;
   border-radius: 50%;
-  background: radial-gradient(circle at 30% 28%, rgba(255,255,255,0.95), rgba(186,236,255,0.28) 55%, rgba(255,204,228,0.25) 100%);
-  border: 2px solid rgba(255,255,255,0.75);
-  box-shadow: inset 0 0 12px rgba(255,255,255,0.65);
-  animation: floatUp 6.5s ease-in-out infinite;
+  background: radial-gradient(circle at 30% 28%, rgba(255,255,255,0.95) 0%, rgba(190,238,255,0.34) 48%, rgba(255,204,230,0.32) 82%, rgba(255,255,255,0.6) 100%);
+  border: 1.5px solid rgba(255,255,255,0.82);
+  box-shadow: inset 0 0 14px rgba(255,255,255,0.75), 0 4px 12px rgba(130, 190, 230, 0.12);
+  animation: bubbleRise 12s linear infinite;
 }
-.b1 { width: 58px; height: 58px; left: 22%; top: 15%; }
-.b2 { width: 32px; height: 32px; left: 79%; top: 38%; animation-delay: 1.4s; }
-.b3 { width: 42px; height: 42px; left: 17%; top: 44%; animation-delay: 2.6s; }
-.b4 { width: 24px; height: 24px; left: 73%; top: 20%; animation-delay: 0.7s; }
+.b1 { width: 64px; height: 64px; left: 20%; animation-duration: 14s; animation-delay: -3s; }
+.b2 { width: 30px; height: 30px; left: 79%; animation-duration: 11s; animation-delay: -7s; }
+.b3 { width: 44px; height: 44px; left: 14%; animation-duration: 13s; animation-delay: -9s; }
+.b4 { width: 22px; height: 22px; left: 73%; animation-duration: 10s; animation-delay: -2s; }
+.b5 { width: 52px; height: 52px; left: 82%; animation-duration: 15s; animation-delay: -11s; }
+.b6 { width: 18px; height: 18px; left: 32%; animation-duration: 9.5s; animation-delay: -5s; }
+.b7 { width: 36px; height: 36px; left: 64%; animation-duration: 12.5s; animation-delay: -8s; }
+.b8 { width: 26px; height: 26px; left: 46%; animation-duration: 11.5s; animation-delay: -4s; }
+
 .sparkle {
   position: absolute;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 18px;
-  text-shadow: 0 0 10px rgba(255, 255, 255, 0.9);
-  animation: twinkle 3s ease-in-out infinite;
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 16px;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.95);
+  animation: twinkle 3.2s ease-in-out infinite;
 }
-.sp1 { left: 32%; top: 30%; }
-.sp2 { left: 68%; top: 32%; animation-delay: 1s; font-size: 14px; }
-.sp3 { left: 50%; top: 46%; animation-delay: 2s; font-size: 12px; }
-@keyframes floatUp {
-  0%, 100% { transform: translateY(0px); }
-  50% { transform: translateY(-12px); }
+.sp1 { left: 28%; top: 32%; }
+.sp2 { left: 71%; top: 34%; animation-delay: 1.1s; font-size: 13px; }
+.sp3 { left: 48%; top: 44%; animation-delay: 2.1s; font-size: 11px; }
+.sp4 { left: 19%; top: 56%; animation-delay: 0.6s; font-size: 12px; }
+.sp5 { left: 78%; top: 54%; animation-delay: 1.8s; font-size: 15px; }
+
+@keyframes bubbleRise {
+  0%   { transform: translateY(0) translateX(0) scale(0.88); opacity: 0; }
+  12%  { opacity: 0.85; }
+  50%  { transform: translateY(-52vh) translateX(18px) scale(1); opacity: 0.82; }
+  88%  { opacity: 0.65; }
+  100% { transform: translateY(-112vh) translateX(-14px) scale(1.06); opacity: 0; }
 }
 @keyframes twinkle {
-  0%, 100% { opacity: 0.4; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1.2); }
+  0%, 100% { opacity: 0.35; transform: scale(0.82); }
+  50% { opacity: 1; transform: scale(1.22); }
 }
 
 /* 상단 바 */
@@ -188,11 +213,14 @@ html, body {
 }
 
 /* ================================================================
- * 1. 홈 화면 (시안 1번 1:1 매칭)
+ * 1. 홈 화면 (시안 1번 1:1 매칭 + 은은한 비눗방울 + WebP 모션 캐릭터)
  * ================================================================ */
 .screen-home {
-  background: linear-gradient(115deg, #FFF6E6 0%, #FFFBF2 46%, #CBEDFF 100%);
+  background: radial-gradient(circle at 86% 14%, #BDE8FF 0%, rgba(189, 232, 255, 0) 56%),
+              linear-gradient(112deg, #FFF5E2 0%, #FFFBF2 48%, #DFF4FF 100%);
+  overflow: hidden;
 }
+
 .home-center {
   flex: 1;
   display: flex;
@@ -201,77 +229,91 @@ html, body {
   justify-content: center;
   position: relative;
   z-index: 2;
-  margin-top: -16px;
+  margin-top: -28px;
+  padding-bottom: 18px;
 }
-.app-logo {
-  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
-  margin: 0;
-  font-size: clamp(42px, 6.2vw, 66px);
-  font-weight: 400;
-  letter-spacing: 1px;
-  line-height: 1.08;
-  filter: drop-shadow(0 6px 14px rgba(55, 72, 100, 0.16));
-  -webkit-text-stroke: 7px #FFFFFF;
-  paint-order: stroke fill;
+.app-logo-wrap {
+  width: clamp(250px, 38vw, 410px);
+  margin-bottom: 6px;
+  animation: logoFloat 4.2s ease-in-out infinite;
 }
-.app-logo .c1 { color: #3AB4F2; }
-.app-logo .c2 { color: #FFBE2E; }
-.app-logo .c3 { color: #47D1A0; }
-.app-logo .c4 { color: #4CC9C0; }
-.app-logo .c5 { color: #FF7582; }
-.app-logo .gap { display: inline-block; width: 10px; }
+.app-logo-img {
+  width: 100%;
+  height: auto;
+  display: block;
+  filter: drop-shadow(0 6px 14px rgba(80, 62, 52, 0.14));
+}
+@keyframes logoFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
 
+/* 1인↔2인 전환 시 레이아웃 점프 없이 부드럽게 슬라이드! */
 .mascots-stage {
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  gap: clamp(36px, 9vw, 130px);
-  margin-top: -4px;
   position: relative;
+  width: 100%;
+  height: clamp(170px, 43vh, 275px);
+  margin-top: -2px;
 }
 .mascot {
-  position: relative;
+  position: absolute;
+  left: 50%;
+  bottom: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  transition: transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.25s ease;
-  animation: bob 2.9s ease-in-out infinite;
+  cursor: pointer;
+  transform-origin: center bottom;
+  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.42s ease;
+  will-change: transform, opacity;
+}
+.mascot-momo {
+  transform: translateX(calc(-50% - clamp(95px, 14vw, 170px))) scale(1);
+}
+.mascot-popo {
+  transform: translateX(calc(-50% + clamp(95px, 14vw, 170px))) scale(1);
+  opacity: 1;
+}
+/* 1인 모드: 모모는 정중앙으로 부드럽게 슬라이드, 포포는 우측으로 자연스럽게 페이드아웃 */
+.mascots-stage.single-player .mascot-momo {
+  transform: translateX(-50%) scale(1.05);
+}
+.mascots-stage.single-player .mascot-popo {
+  transform: translateX(calc(-50% + clamp(130px, 19vw, 220px))) scale(0.88);
+  opacity: 0;
+  pointer-events: none;
 }
 .mascot img {
-  height: clamp(160px, 42vh, 270px);
+  height: clamp(160px, 41vh, 265px);
   width: auto;
   object-fit: contain;
-  filter: drop-shadow(0 12px 18px rgba(45, 70, 95, 0.14));
+  filter: drop-shadow(0 12px 18px rgba(45, 70, 95, 0.13));
 }
-.mascot-popo { animation-delay: 0.45s; }
 .mascot-popo img {
-  height: clamp(148px, 39vh, 250px);
+  height: clamp(148px, 38vh, 245px);
 }
 .mascot-shadow {
-  width: 68%;
+  width: 60%;
   height: 14px;
-  background: radial-gradient(ellipse at center, rgba(60, 75, 95, 0.16) 0%, rgba(60, 75, 95, 0) 70%);
-  margin-top: -10px;
+  background: radial-gradient(ellipse at center, rgba(60, 75, 95, 0.15) 0%, rgba(60, 75, 95, 0) 72%);
+  margin-top: -12px;
 }
-.mascot.hidden-p2 {
-  opacity: 0;
-  transform: scale(0.6) translateX(30px);
-  pointer-events: none;
-  width: 0;
-  overflow: hidden;
+.mascot.happy-hop img {
+  animation: gentleTapBounce 0.48s cubic-bezier(0.22, 1, 0.36, 1);
 }
-@keyframes bob {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-9px); }
+@keyframes gentleTapBounce {
+  0%   { transform: translateY(0) scale(1); }
+  40%  { transform: translateY(-14px) scale(1.03); }
+  100% { transform: translateY(0) scale(1); }
 }
 
-/* 홈 하단 컨트롤: 시안 1번처럼 두 캐릭터 발 사이 중앙에 겹쳐 깔끔히 배치 */
+/* 홈 하단 컨트롤: 바닥에 여유를 두고 시안처럼 두 캐릭터 발 사이 중앙에 깔끔하게 배치 */
 .home-controls {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  margin-top: -54px;
+  margin-top: -76px;
   z-index: 4;
 }
 .player-toggle {
@@ -314,25 +356,45 @@ html, body {
 .mini-heads img + img { margin-left: -4px; }
 
 .btn-primary-yellow {
-  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
-  border: 3px solid rgba(255, 255, 255, 0.65);
-  background: linear-gradient(180deg, #FFE666 0%, #FFC400 55%, #F5A800 100%);
-  color: #fff;
-  font-size: clamp(24px, 3vw, 30px);
-  font-weight: 400;
-  padding: 10px 54px;
+  position: relative;
+  overflow: hidden;
+  font-family: "Apple SD Gothic Neo", "Pretendard", sans-serif;
+  border: none;
+  background: linear-gradient(180deg, #FFE24A 0%, #FFC20A 60%, #F5AF00 100%);
+  color: #FFFFFF;
+  font-size: clamp(20px, 2.3vw, 24px);
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  padding: 13px 46px;
+  min-width: 186px;
+  justify-content: center;
   border-radius: 999px;
   cursor: pointer;
-  box-shadow: 0 7px 0 #DB8F00, 0 14px 26px rgba(242, 173, 0, 0.36), inset 0 3px 4px rgba(255, 255, 255, 0.65);
-  text-shadow: 0 2px 3px rgba(175, 100, 0, 0.38);
+  box-shadow:
+    0 8px 20px rgba(242, 173, 0, 0.34),
+    0 3px 0 #E59D00,
+    inset 0 2px 3px rgba(255, 255, 255, 0.6);
+  text-shadow: 0 1px 2px rgba(185, 110, 0, 0.32);
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  gap: 9px;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.btn-primary-yellow .play-tri {
+  font-size: 0.85em;
+}
+.btn-primary-yellow:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 11px 24px rgba(242, 173, 0, 0.4),
+    0 4px 0 #E59D00,
+    inset 0 2px 3px rgba(255, 255, 255, 0.7);
 }
 .btn-primary-yellow:active {
-  transform: translateY(4px);
-  box-shadow: 0 3px 0 #DB8F00, 0 8px 14px rgba(242, 173, 0, 0.3);
+  transform: translateY(2px);
+  box-shadow:
+    0 4px 12px rgba(242, 173, 0, 0.3),
+    0 1px 0 #E59D00;
 }
 .btn-secondary-mint {
   font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
@@ -356,33 +418,59 @@ html, body {
   overflow: hidden;
 }
 .screen-title {
-  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
+  font-family: "Apple SD Gothic Neo", "Pretendard", sans-serif;
   margin: 0;
-  font-size: clamp(26px, 3.4vw, 36px);
-  font-weight: 400;
+  font-size: clamp(24px, 3vw, 32px);
+  font-weight: 900;
   color: var(--ink);
-  letter-spacing: 0.5px;
+  letter-spacing: -0.5px;
 }
-.pill-badge {
-  border: none;
-  background: rgba(164, 198, 224, 0.45);
-  color: var(--ink);
-  font-size: 16px;
-  font-weight: 800;
-  padding: 10px 20px;
+
+/* 우측 상단 1인/2인 고시인성 세그먼트 토글 */
+.mini-player-toggle {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.94);
+  padding: 4px;
   border-radius: 999px;
-  backdrop-filter: blur(8px);
-  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(45, 70, 110, 0.12);
+  gap: 3px;
 }
+.mini-opt {
+  border: none;
+  background: transparent;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #5C687E;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.18s ease;
+}
+.mini-opt img {
+  width: 19px;
+  height: 19px;
+  object-fit: contain;
+}
+.mini-opt.active {
+  background: linear-gradient(135deg, #4FD5C9, #39BFB5);
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(57, 191, 181, 0.35);
+}
+
 .cards-grid {
   flex: 1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: clamp(14px, 2.4vw, 26px);
+  gap: clamp(16px, 2.4vw, 28px);
   align-items: center;
-  max-width: 920px;
+  max-width: 880px;
   width: 100%;
   margin: 0 auto;
+  padding-bottom: 10px;
   z-index: 2;
 }
 .game-card {
@@ -394,13 +482,23 @@ html, body {
   box-shadow: 0 14px 32px rgba(55, 86, 125, 0.12);
   cursor: pointer;
   text-align: center;
-  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s ease, box-shadow 0.2s ease;
+  animation: cardGentleFloat 4.2s ease-in-out infinite;
+}
+.game-card:nth-child(2) { animation-delay: 0.7s; }
+.game-card:nth-child(3) { animation-delay: 1.4s; }
+@keyframes cardGentleFloat {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-6px); }
 }
 .game-card:hover,
 .game-card.featured {
   border-color: #FFD84D;
-  box-shadow: 0 0 0 6px rgba(255, 216, 77, 0.28), 0 18px 36px rgba(242, 183, 5, 0.22);
-  transform: translateY(-6px) scale(1.03);
+  box-shadow: 0 0 0 5px rgba(255, 216, 77, 0.26), 0 18px 34px rgba(242, 183, 5, 0.2);
+}
+.game-card:hover {
+  animation-play-state: paused;
+  transform: translateY(-7px) scale(1.025);
 }
 .game-card:active { transform: scale(0.97); }
 .card-art-img {
@@ -418,29 +516,44 @@ html, body {
   display: block;
 }
 .card-title {
-  font-family: "Jua", "Apple SD Gothic Neo", sans-serif;
-  font-size: clamp(22px, 2.6vw, 28px);
-  font-weight: 400;
+  font-family: "Apple SD Gothic Neo", "Pretendard", sans-serif;
+  font-size: clamp(20px, 2.4vw, 25px);
+  font-weight: 900;
   color: var(--ink);
-  margin-bottom: 4px;
+  letter-spacing: -0.4px;
+  margin-bottom: 8px;
 }
 .card-meta {
-  font-size: clamp(13px, 1.6vw, 16px);
+  display: flex;
+  justify-content: center;
+}
+.intensity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 14px;
   font-weight: 800;
-  color: var(--ink-soft);
+  background: #FFF4E5;
+  color: #C85A17;
 }
-.wii-pointer {
-  position: absolute;
-  right: -8px;
-  bottom: -14px;
-  font-size: 32px;
-  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.2));
-  animation: tapBob 1.6s ease-in-out infinite;
+.intensity-pill.level-1 { background: #EEF9F2; color: #2B8A56; }
+.intensity-pill.level-2 { background: #FFF5E6; color: #C96A12; }
+.intensity-pill.level-3 { background: #FFF0F0; color: #D63E4B; }
+.flames {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
 }
-@keyframes tapBob {
-  0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(-4px, -6px); }
+.flame-ic {
+  width: 16px;
+  height: 16px;
+  fill: #FF7A1A;
 }
+.level-1 .flame-ic { fill: #44C27D; }
+.level-3 .flame-ic { fill: #FF4D5A; }
+
 .select-tip {
   text-align: center;
   margin: 0;
@@ -451,20 +564,20 @@ html, body {
 }
 .select-peeking-mascots {
   position: absolute;
-  right: 18px;
-  bottom: -16px;
+  right: 14px;
+  bottom: -18px;
   display: flex;
   align-items: flex-end;
   pointer-events: none;
   z-index: 3;
 }
 .select-peeking-mascots .peek-momo {
-  width: clamp(72px, 10vw, 108px);
+  width: clamp(64px, 8.5vw, 94px);
   filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.14));
 }
 .select-peeking-mascots .peek-popo {
-  width: clamp(78px, 11vw, 118px);
-  margin-left: -18px;
+  width: clamp(68px, 9.2vw, 102px);
+  margin-left: -16px;
   filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.14));
 }
 
@@ -644,15 +757,23 @@ html, body {
 
 .ingame-callout {
   align-self: center;
-  margin-top: 10px;
-  background: rgba(255, 96, 106, 0.94);
+  margin-top: 8px;
+  background: rgba(255, 96, 106, 0.92);
   color: #fff;
-  border: 3px solid #fff;
-  padding: 10px 28px;
+  border: 3px solid rgba(255, 255, 255, 0.9);
+  padding: 9px 26px;
   border-radius: 999px;
-  font-size: clamp(18px, 2.5vw, 25px);
+  font-size: clamp(16px, 2.2vw, 22px);
   font-weight: 900;
   box-shadow: var(--shadow-lg);
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.45s ease, transform 0.45s ease;
+  pointer-events: none;
+}
+.ingame-callout.fade-out {
+  opacity: 0;
+  transform: translateY(-10px);
 }
 
 /* ================================================================
@@ -789,6 +910,12 @@ html, body {
   display: flex;
   align-items: center;
   gap: 11px;
+}
+.setting-sub {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  margin-left: -4px;
 }
 .s-ic {
   width: 34px;

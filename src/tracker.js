@@ -27,8 +27,17 @@ export class PoseTracker {
     this.pointerVel = 0;
   }
 
-  async init(maxPlayers = 2) {
+  async init(maxPlayers = 2, { forcePointer = false } = {}) {
     this.maxPlayers = maxPlayers;
+
+    // 개발자 모드(마우스 테스트): 카메라를 열지 않고 즉시 포인터 모드로 전환
+    if (forcePointer) {
+      this.stop();
+      this.mode = "pointer";
+      this.onStatus("🛠️ 개발자 모드 · 마우스로 자유롭게 테스트하세요!");
+      return;
+    }
+
     this.onStatus("카메라 연결 중...");
 
     // 1) Request front camera
