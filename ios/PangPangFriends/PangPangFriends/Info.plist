@@ -24,6 +24,10 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>카메라로 아이의 손과 움직임을 실시간 인식해 몸으로 노는 게임을 진행합니다. 영상은 기기 밖으로 전송되지 않습니다.</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Jua-Regular.ttf</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

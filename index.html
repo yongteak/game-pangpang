@@ -112,7 +112,7 @@
          ================================================================ -->
     <section id="screen-select" class="screen screen-select">
       <header class="top-bar">
-        <button id="btn-back-home" class="icon-btn white-btn" aria-label="홈으로">
+        <button id="btn-back-home" class="icon-btn white-btn" data-hand-target="btn" data-hand-dwell="1.1" aria-label="홈으로">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="15 18 9 12 15 6"/>
           </svg>
@@ -122,10 +122,10 @@
 
         <div class="top-actions">
           <div class="mini-player-toggle" role="group" aria-label="플레이 인원 전환">
-            <button class="mini-opt" data-players="1" id="select-toggle-1p">
+            <button class="mini-opt" data-players="1" id="select-toggle-1p" data-hand-target="btn" data-hand-dwell="1.0">
               <img src="./assets/momo_head.png" alt="" /> 1인
             </button>
-            <button class="mini-opt active" data-players="2" id="select-toggle-2p">
+            <button class="mini-opt active" data-players="2" id="select-toggle-2p" data-hand-target="btn" data-hand-dwell="1.0">
               <span class="mini-heads">
                 <img src="./assets/momo_head.png" alt="" />
                 <img src="./assets/popo_head.png" alt="" />
@@ -133,7 +133,7 @@
               2인
             </button>
           </div>
-          <button id="btn-open-settings-select" class="icon-btn white-btn" aria-label="설정">
+          <button id="btn-open-settings-select" class="icon-btn white-btn" data-hand-target="btn" data-hand-dwell="1.1" aria-label="설정">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -142,58 +142,155 @@
         </div>
       </header>
 
-      <main class="cards-grid">
-        <button class="game-card featured" data-game="fruit">
-          <div class="card-art-img">
-            <img src="./assets/card_fruit.jpg" alt="과일 팡팡" draggable="false" />
-          </div>
-          <div class="card-title">과일 팡팡</div>
-          <div class="card-meta">
-            <span class="intensity-pill level-2" title="운동 강도">
-              <span class="flames" aria-hidden="true">
-                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
-                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
-              </span>
-              보통
-            </span>
-          </div>
-        </button>
+      <main class="carousel-stage">
+        <div class="carousel-shell">
+          <button id="btn-carousel-prev" class="carousel-arrow carousel-prev" aria-label="이전 놀이" disabled>
+            <svg class="arrow-dwell-svg" viewBox="0 0 64 64" aria-hidden="true">
+              <circle class="arrow-dwell-ring" cx="32" cy="32" r="28"></circle>
+            </svg>
+            <svg class="arrow-chevron" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"/>
+            </svg>
+          </button>
 
-        <button class="game-card" data-game="balloon">
-          <div class="card-art-img">
-            <img src="./assets/card_balloon.jpg" alt="풍선 배구" draggable="false" />
-          </div>
-          <div class="card-title">풍선 배구</div>
-          <div class="card-meta">
-            <span class="intensity-pill level-1" title="운동 강도">
-              <span class="flames" aria-hidden="true">
-                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
-              </span>
-              살살
-            </span>
-          </div>
-        </button>
+          <div class="carousel-viewport" id="carousel-viewport">
+            <div class="carousel-track" id="carousel-track">
+              <button class="game-card featured" data-game="fruit">
+                <div class="card-art-img">
+                  <img src="./assets/card_fruit.jpg" alt="과일 팡팡" draggable="false" />
+                </div>
+                <div class="card-title">과일 팡팡</div>
+                <div class="card-meta">
+                  <span class="intensity-pill level-2" title="운동 강도">
+                    <span class="flames" aria-hidden="true">
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                    </span>
+                    보통
+                  </span>
+                </div>
+                <div class="card-dwell-bar"><span></span></div>
+              </button>
 
-        <button class="game-card" data-game="freeze">
-          <div class="card-art-img">
-            <img src="./assets/card_freeze.jpg" alt="얼음 땡!" draggable="false" />
+              <button class="game-card" data-game="balloon">
+                <div class="card-art-img">
+                  <img src="./assets/card_balloon.jpg" alt="풍선 배구" draggable="false" />
+                </div>
+                <div class="card-title">풍선 배구</div>
+                <div class="card-meta">
+                  <span class="intensity-pill level-1" title="운동 강도">
+                    <span class="flames" aria-hidden="true">
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                    </span>
+                    살살
+                  </span>
+                </div>
+                <div class="card-dwell-bar"><span></span></div>
+              </button>
+
+              <button class="game-card" data-game="freeze">
+                <div class="card-art-img">
+                  <img src="./assets/card_freeze.jpg" alt="얼음 땡!" draggable="false" />
+                </div>
+                <div class="card-title">얼음 땡!</div>
+                <div class="card-meta" id="freeze-meta">
+                  <span class="intensity-pill level-3" title="운동 강도">
+                    <span class="flames" aria-hidden="true">
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                    </span>
+                    힘껏
+                  </span>
+                </div>
+                <div class="card-dwell-bar"><span></span></div>
+              </button>
+
+              <button class="game-card" data-game="animal">
+                <div class="card-art-img">
+                  <img src="./assets/card_animal.jpg" alt="동물 흉내 포즈" draggable="false" />
+                </div>
+                <div class="card-title">동물 흉내 포즈</div>
+                <div class="card-meta">
+                  <span class="intensity-pill level-2" title="운동 강도">
+                    <span class="flames" aria-hidden="true">
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                    </span>
+                    전신 포즈
+                  </span>
+                </div>
+                <div class="card-dwell-bar"><span></span></div>
+              </button>
+
+              <button class="game-card" data-game="jungle">
+                <div class="card-art-img">
+                  <img src="./assets/card_jungle.jpg" alt="달려라! 정글 모험" draggable="false" />
+                </div>
+                <div class="card-title">달려라! 정글 모험</div>
+                <div class="card-meta">
+                  <span class="intensity-pill level-3" title="운동 강도">
+                    <span class="flames" aria-hidden="true">
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                    </span>
+                    전신 모험
+                  </span>
+                </div>
+                <div class="card-dwell-bar"><span></span></div>
+              </button>
+
+              <button class="game-card" data-game="mole">
+                <div class="card-art-img">
+                  <img src="./assets/card_mole.jpg" alt="두더지 하이파이브" draggable="false" />
+                </div>
+                <div class="card-title">두더지 하이파이브</div>
+                <div class="card-meta">
+                  <span class="intensity-pill level-2" title="운동 강도">
+                    <span class="flames" aria-hidden="true">
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                    </span>
+                    손·발 터치
+                  </span>
+                </div>
+                <div class="card-dwell-bar"><span></span></div>
+              </button>
+
+              <button class="game-card" data-game="balance">
+                <div class="card-art-img">
+                  <img src="./assets/card_balance.jpg" alt="외나무다리 균형" draggable="false" />
+                </div>
+                <div class="card-title">외나무다리 균형</div>
+                <div class="card-meta">
+                  <span class="intensity-pill level-1" title="운동 강도">
+                    <span class="flames" aria-hidden="true">
+                      <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
+                    </span>
+                    전신 균형
+                  </span>
+                </div>
+                <div class="card-dwell-bar"><span></span></div>
+              </button>
+            </div>
           </div>
-          <div class="card-title">얼음 땡!</div>
-          <div class="card-meta" id="freeze-meta">
-            <span class="intensity-pill level-3" title="운동 강도">
-              <span class="flames" aria-hidden="true">
-                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
-                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
-                <svg class="flame-ic" viewBox="0 0 24 24"><path d="M12.7 2.2c.3 2.8-1.4 4.7-2.6 6.2-1.2 1.5-2.1 2.8-2.1 4.9 0 3 2.4 5.5 5.4 5.5 3.1 0 5.6-2.5 5.6-5.7 0-2.8-1.4-5.1-3.3-7.1-.2 1.4-.9 2.3-1.8 2.8.5-2.1-.1-4.8-1.2-6.6z"/></svg>
-              </span>
-              힘껏
-            </span>
-          </div>
-        </button>
+
+          <button id="btn-carousel-next" class="carousel-arrow carousel-next" aria-label="다음 놀이">
+            <svg class="arrow-dwell-svg" viewBox="0 0 64 64" aria-hidden="true">
+              <circle class="arrow-dwell-ring" cx="32" cy="32" r="28"></circle>
+            </svg>
+            <svg class="arrow-chevron" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="9 18 15 12 9 6"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="carousel-dots" id="carousel-dots" role="tablist" aria-label="놀이 목록 페이지"></div>
       </main>
 
       <p class="select-tip" id="noise-mode-banner">
-        🪶 층간소음 모드 ON · 팔과 상체로 조용히 즐겨요
+        ✋ 한 손을 카드·상단 버튼에 올리거나 터치해서 골라요! · 🪶 층간소음 모드 ON
       </p>
 
       <!-- 시안 2번 우하단 빼꼼 마스코트 -->
@@ -209,10 +306,10 @@
     <section id="screen-ready" class="screen screen-overlay">
       <div class="ready-top-bar">
         <div class="ready-left-group">
-          <button id="btn-ready-back" class="icon-btn glass-dark" aria-label="뒤로">✕</button>
+          <button id="btn-ready-back" class="icon-btn glass-dark" data-hand-target="btn" data-hand-dwell="1.1" aria-label="뒤로">✕</button>
           <div class="live-pill"><span class="rec-dot"></span> <span id="ready-live-label">LIVE · 2P</span></div>
         </div>
-        <button id="btn-ready-skip" class="skip-pill">바로 시작 ▶</button>
+        <button id="btn-ready-skip" class="skip-pill" data-hand-target="btn" data-hand-dwell="1.1">바로 시작 ▶</button>
       </div>
 
       <div class="ready-banner" id="ready-banner">
@@ -247,10 +344,10 @@
     </section>
 
     <!-- ================================================================
-         5. 클리어 & 만세 축하 오버레이
+         5. 게임 통합 자연 클리어 오버레이 (카메라 속 환호하는 얼굴은 열고 상·하단으로 자연 통합!)
          ================================================================ -->
     <section id="screen-clear" class="screen screen-overlay screen-clear">
-      <div class="clear-card">
+      <div class="clear-ribbon">
         <div class="clear-mascots">
           <img src="./assets/momo_head.png" alt="모모" />
           <img src="./assets/popo_head.png" alt="포포" />
@@ -262,23 +359,23 @@
         </div>
         <h2 class="clear-title">최고야! 짝짝짝!</h2>
         <p class="clear-sub" id="clear-summary">과일과 거대 수박을 함께 깨뜨렸어요!</p>
+      </div>
 
-        <div class="clear-actions">
-          <button id="btn-replay" class="btn-primary-yellow">🔄 다시 하기</button>
-          <button id="btn-other-game" class="btn-secondary-mint">🎮 다른 놀이</button>
-        </div>
+      <div class="clear-actions-dock">
+        <button id="btn-replay" class="btn-primary-yellow clear-hand-btn" data-hand-target="btn" data-hand-dwell="1.2">🔄 다시 하기</button>
+        <button id="btn-other-game" class="btn-secondary-mint clear-hand-btn" data-hand-target="btn" data-hand-dwell="1.2">🎮 다른 놀이</button>
       </div>
     </section>
 
     <!-- ================================================================
-         6. 미니멀 부모님 설정 모달 (시안 5번 1:1 구현)
+         6. 미니멀 부모님 설정 모달 (시안 5번 + 전 항목 공중 핸드·터치 동시 조작!)
          ================================================================ -->
     <div id="modal-settings" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <div class="settings-card">
         <div class="settings-header">
           <div class="settings-spacer"></div>
           <h2 id="settings-title">설정</h2>
-          <button id="btn-close-settings" class="close-btn" aria-label="닫기">✕</button>
+          <button id="btn-close-settings" class="close-btn" data-hand-target="btn" data-hand-dwell="1.0" aria-label="닫기">✕</button>
         </div>
 
         <div class="settings-list">
@@ -286,15 +383,15 @@
           <div class="setting-row">
             <div class="setting-label"><span class="s-ic">👥</span> 플레이 인원</div>
             <div class="seg-control" id="set-players">
-              <button data-val="1">1인</button>
-              <button data-val="2" class="active">2인</button>
+              <button data-val="1" data-hand-target="btn" data-hand-dwell="1.0">1인</button>
+              <button data-val="2" class="active" data-hand-target="btn" data-hand-dwell="1.0">2인</button>
             </div>
           </div>
 
           <!-- 2) 층간소음 모드 -->
           <div class="setting-row">
             <div class="setting-label"><span class="s-ic">🪶</span> 층간소음 모드</div>
-            <label class="ios-switch">
+            <label class="ios-switch" data-hand-target="btn" data-hand-dwell="1.0">
               <input type="checkbox" id="set-quiet" checked />
               <span class="slider"></span>
             </label>
@@ -304,9 +401,9 @@
           <div class="setting-row">
             <div class="setting-label"><span class="s-ic">⏱️</span> 놀이 속도</div>
             <div class="seg-control seg-3" id="set-speed">
-              <button data-val="slow">느림(4세)</button>
-              <button data-val="normal" class="active">보통</button>
-              <button data-val="fast">빠름(6세)</button>
+              <button data-val="slow" data-hand-target="btn" data-hand-dwell="1.0">느림(4세)</button>
+              <button data-val="normal" class="active" data-hand-target="btn" data-hand-dwell="1.0">보통</button>
+              <button data-val="fast" data-hand-target="btn" data-hand-dwell="1.0">빠름(6세)</button>
             </div>
           </div>
 
@@ -314,15 +411,17 @@
           <div class="setting-row">
             <div class="setting-label"><span class="s-ic">🔊</span> 소리 · TV 연결</div>
             <div class="sound-tv-group">
+              <button id="btn-vol-down" class="vol-step-btn" data-hand-target="btn" data-hand-dwell="0.85" aria-label="소리 작게">−</button>
               <input type="range" id="set-volume" min="0" max="100" value="80" aria-label="볼륨" />
-              <button id="btn-tv-guide" class="tv-pill">📺 AirPlay TV 연결</button>
+              <button id="btn-vol-up" class="vol-step-btn" data-hand-target="btn" data-hand-dwell="0.85" aria-label="소리 크게">+</button>
+              <button id="btn-tv-guide" class="tv-pill" data-hand-target="btn" data-hand-dwell="1.0">📺 AirPlay TV</button>
             </div>
           </div>
 
           <!-- 5) 개발자 모드 (카메라 없이 마우스 테스트) -->
           <div class="setting-row">
             <div class="setting-label"><span class="s-ic">🛠️</span> 개발자 모드 <span class="setting-sub">(마우스 테스트)</span></div>
-            <label class="ios-switch">
+            <label class="ios-switch" data-hand-target="btn" data-hand-dwell="1.0">
               <input type="checkbox" id="set-dev-mode" />
               <span class="slider"></span>
             </label>
@@ -341,15 +440,24 @@
       </div>
     </div>
 
-    <!-- 일시정지 간단 모달 -->
+    <!-- 일시정지 간단 모달 (공중 핸드 + 터치 동시 지원) -->
     <div id="modal-pause" class="modal-backdrop hidden" role="dialog" aria-modal="true">
       <div class="pause-card">
         <h2>잠깐 쉬어가기</h2>
         <div class="pause-actions">
-          <button id="btn-resume" class="btn-primary-yellow">▶ 계속 놀기</button>
-          <button id="btn-quit-to-select" class="btn-secondary-mint">🎮 다른 놀이</button>
+          <button id="btn-resume" class="btn-primary-yellow" data-hand-target="btn" data-hand-dwell="1.1">▶ 계속 놀기</button>
+          <button id="btn-quit-to-select" class="btn-secondary-mint" data-hand-target="btn" data-hand-dwell="1.1">🎮 다른 놀이</button>
         </div>
       </div>
+    </div>
+
+    <!-- 전역 공중 원핸드 커서 (모든 메뉴·설정·클리어·일시정지 최상단에서 동작!) -->
+    <div id="air-cursor" class="air-cursor hidden" aria-hidden="true">
+      <svg viewBox="0 0 64 64">
+        <circle class="ac-bg" cx="32" cy="32" r="26"></circle>
+        <circle class="ac-ring" id="air-cursor-ring" cx="32" cy="32" r="26"></circle>
+      </svg>
+      <span class="ac-dot">✋</span>
     </div>
   </div>
 

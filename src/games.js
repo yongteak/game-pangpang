@@ -26,6 +26,9 @@ const SLASH_MIN_VEL = {
   fast: 360,
 };
 
+// 손 궤적 및 손 후광 VFX를 표시하는 손 액션 게임 (전신 포즈/댄스/균형 게임에서는 완전히 숨김!)
+const HAND_VFX_GAMES = new Set(["fruit", "balloon", "mole"]);
+
 function distPointToSegment(cx, cy, x0, y0, x1, y1) {
   const vx = x1 - x0;
   const vy = y1 - y0;
@@ -52,11 +55,22 @@ const TOUGH_FRUITS = [
   { kind: "peach",     color: "#FF8FA3", hex: 0xff8fa3, hp: 2 },
 ];
 
-// 90초 동안 등장하는 3단계 보스 릴레이!
+// 90초 동안 등장하는 3단계 보스 릴레이! (온가족이 5~9초간 신나게 연타하는 탱탱 보스전!)
 const BOSS_SCHEDULE = [
-  { triggerTime: 24, kind: "pineapple", name: "거대 파인애플", hits2p: 10, hits1p: 7, bonus: 8,  color: "#FFB703", hex: 0xffd43b },
-  { triggerTime: 52, kind: "melon",     name: "거대 황금 멜론", hits2p: 12, hits1p: 9, bonus: 10, color: "#52D1A0", hex: 0x62f2c8 },
-  { triggerTime: 76, kind: "watermelon",name: "거대 수박 왕",  hits2p: 16, hits1p: 12, bonus: 15, color: "#FF4D6D", hex: 0x7ef58a },
+  { triggerTime: 22, kind: "pineapple", name: "거대 파인애플", hits2p: 26, hits1p: 18, bonus: 12, color: "#FFB703", hex: 0xffd43b },
+  { triggerTime: 48, kind: "melon",     name: "거대 황금 멜론", hits2p: 34, hits1p: 24, bonus: 15, color: "#52D1A0", hex: 0x62f2c8 },
+  { triggerTime: 72, kind: "watermelon",name: "거대 수박 왕",  hits2p: 45, hits1p: 32, bonus: 25, color: "#FF4D6D", hex: 0x7ef58a },
+];
+
+// 4번 게임: 동물 흉내 포즈 따라하기 7종 릴레이 (체형 독립 14관절 전신 판정!)
+const ANIMAL_POSES = [
+  { id: "giraffe",  tex: "animal_giraffe",  name: "기린",     cue: "두 팔을 머리 위로 쭉!",        shortCue: "기린 만세!",      color: "#FFB703", hex: 0xffb703 },
+  { id: "eagle",    tex: "animal_eagle",    name: "독수리",   cue: "두 팔을 양옆으로 활짝!",       shortCue: "독수리 날개!",    color: "#F97316", hex: 0xf97316 },
+  { id: "crab",     tex: "animal_crab",     name: "꽃게",     cue: "양팔을 꺾어 집게손 쫙!",       shortCue: "꽃게 집게손!",    color: "#EF4444", hex: 0xef4444 },
+  { id: "flamingo", tex: "animal_flamingo", name: "플라밍고", cue: "한 발 들고 균형 잡기!",        shortCue: "한 발 균형!",     color: "#EC4899", hex: 0xec4899 },
+  { id: "frog",     tex: "animal_frog",     name: "개구리",   cue: "바닥으로 쏙 웅크리기!",        shortCue: "웅크리기(스쿼트)", color: "#22C55E", hex: 0x22c55e },
+  { id: "elephant", tex: "animal_elephant", name: "코끼리",   cue: "몸을 옆으로 기울여 흔들기!",   shortCue: "코끼리 흔들기!",  color: "#38BDF8", hex: 0x38bdf8 },
+  { id: "starfish", tex: "animal_starfish", name: "불가사리", cue: "팔·다리 모두 크게 X자로 쫙!",  shortCue: "불가사리 X자!",   color: "#A855F7", hex: 0xa855f7 },
 ];
 
 function loadSprite(src) {
@@ -75,6 +89,7 @@ export class MiniGameEngine {
     this.trails = [[], [], [], []];
     this.prevHandPos = [null, null, null, null];
     this.handEnergy = [0, 0, 0, 0];
+    this.swooshCooldown = [0, 0, 0, 0];
     this.emaMotion = 0;
 
     this.particles = [];
@@ -107,6 +122,12 @@ export class MiniGameEngine {
     this.sprites.balloon_beach = loadSprite("./assets/balloon_beach.png");
     this.sprites.balloon_gold = loadSprite("./assets/balloon_gold.png");
     this.sprites.dino = loadSprite("./assets/dino_sprite.png");
+    this.sprites.jungle_vine = loadSprite("./assets/jungle_vine.png");
+    this.sprites.momo_squat = loadSprite("./assets/momo_squat.png");
+    this.sprites.star_3d = loadSprite("./assets/star_3d.png");
+    this.sprites.mole_cute = loadSprite("./assets/mole_cute.png");
+    this.sprites.mole_gold = loadSprite("./assets/mole_gold.png");
+    this.sprites.log_bridge = loadSprite("./assets/log_bridge.png");
 
     this.reset("fruit", this.settings);
   }
@@ -129,6 +150,7 @@ export class MiniGameEngine {
     this.trails = [[], [], [], []];
     this.prevHandPos = [null, null, null, null];
     this.handEnergy = [0, 0, 0, 0];
+    this.swooshCooldown = [0, 0, 0, 0];
     this.emaMotion = 0;
     this.screenShake = 0;
     this.screenFlash = 0;
@@ -180,15 +202,99 @@ export class MiniGameEngine {
       this.hooks.onCallout("풍선을 200점까지 신나게 띄워요!", 2800);
       this.sound.startBgm("balloon", 1.0);
     } else if (gameId === "freeze") {
-      this.roundsTotal = 6;
+      this.roundsTotal = 5;
       this.round = 0;
       this.phase = "dance";
-      this.phaseTimer = 4.2;
-      this.danceEnergy = 0;
+      this.phaseTimer = 7.4;
+      this.freezeDuration = 3.4;
+      this.danceEnergy = 0.55;
       this.freezeHold = 0;
+      this.freezeElapsed = 0;
+      this.freezeWiggleTime = 0;
+      this.freezeSuccessCount = 0;
+      this.wiggleSfxCooldown = 0;
+      this.isWiggling = false;
       this.hooks.onProgress(0, this.roundsTotal);
-      this.hooks.onCallout("신나게 흔들어 춤춰요!", 2400);
+      this.hooks.onCallout("네온 클럽 오픈! 신나게 흔들어 춤춰요!!", 2500);
       this.sound.startBgm("freeze", 1.0);
+    } else if (gameId === "animal") {
+      this.animalList = ANIMAL_POSES;
+      this.animalIndex = 0;
+      this.animalCleared = ANIMAL_POSES.map(() => false);
+      this.animalTimeLimit = 10.0;
+      this.animalTimer = this.animalTimeLimit;
+      this.animalHold = 0;
+      this.animalHoldTarget = 1.8;
+      this.animalMatch = false;
+      this.animalGraceTimer = 0;
+      this.animalPause = 0;
+      this.animalSuccessCount = 0;
+      this.hooks.onProgress(0, ANIMAL_POSES.length);
+      this.hooks.onCallout(`🦒 ${ANIMAL_POSES[0].name}! ${ANIMAL_POSES[0].cue}`, 2800);
+      this.sound.startBgm("balloon", 1.0);
+    } else if (gameId === "jungle") {
+      this.jungleDuration = 60.0;
+      this.jungleElapsed = 0;
+      this.jungleTrackProgress = 0;
+      this.jungleCheckpoints = 0;
+      this.junglePhaseSeq = ["run", "squat", "run", "jump", "run", "squat", "run", "jump", "run", "squat", "jump"];
+      this.junglePhaseIdx = 0;
+      this.junglePhase = "run";
+      this.junglePhaseTimer = 5.6;
+      this.junglePhaseProgress = 0;
+      this.jungleActiveDetected = false;
+      this.jungleVineY = -0.25;
+      this.jungleSquatCleared = false;
+      this.junglePhaseTransitionDelay = 0;
+      this.jungleStars = [];
+      this.jungleJumpWaveCd = 0;
+      this.junglePrevKneeDiff = [0, 0];
+      this.jungleBaselineHeadY = [0.42, 0.42];
+      this.jungleRunTick = 0;
+      this.hooks.onProgress(0, 5);
+      this.hooks.onCallout("🌴 달려라 정글 모험! 제자리 달리기 시작!!", 2800);
+      this.sound.startBgm("adventure", 1.0);
+    } else if (gameId === "mole") {
+      this.moleDuration = 60.0;
+      this.moleElapsed = 0;
+      this.moleFeverTriggered = false;
+      this.moleSpawnTimer = 0.45;
+      this.moleNextRow = "top";
+      this.moleHoles = [
+        { id: 0, row: "top",    x: 0.24, y: 0.28, state: "idle", pop: 0, kind: "mole_cute", golden: false, holdTimer: 0, bonkTimer: 0, cooldown: 0 },
+        { id: 1, row: "top",    x: 0.50, y: 0.26, state: "idle", pop: 0, kind: "mole_cute", golden: false, holdTimer: 0, bonkTimer: 0, cooldown: 0 },
+        { id: 2, row: "top",    x: 0.76, y: 0.28, state: "idle", pop: 0, kind: "mole_cute", golden: false, holdTimer: 0, bonkTimer: 0, cooldown: 0 },
+        { id: 3, row: "bottom", x: 0.24, y: 0.80, state: "idle", pop: 0, kind: "mole_cute", golden: false, holdTimer: 0, bonkTimer: 0, cooldown: 0 },
+        { id: 4, row: "bottom", x: 0.50, y: 0.82, state: "idle", pop: 0, kind: "mole_cute", golden: false, holdTimer: 0, bonkTimer: 0, cooldown: 0 },
+        { id: 5, row: "bottom", x: 0.76, y: 0.80, state: "idle", pop: 0, kind: "mole_cute", golden: false, holdTimer: 0, bonkTimer: 0, cooldown: 0 },
+      ];
+      this.hooks.onProgress(0, 6);
+      this.hooks.onCallout("🐹 위는 손 하이파이브! 아래는 발·손 터치!!", 2800);
+      this.sound.startBgm("adventure", 1.0);
+    } else if (gameId === "balance") {
+      this.balanceDuration = 60.0;
+      this.balanceElapsed = 0;
+      this.bridgeAngle = 0;
+      this.bridgeVel = 0;
+      this.windDir = 0;
+      this.windStrength = 0;
+      this.windActive = false;
+      this.windTimer = 3.0;
+      this.balanceInSafe = true;
+      this.balanceWideArms = false;
+      this.balancePointAccum = 0;
+      this.balanceShowerAccum = 0;
+      this.balanceWobbleCd = 0;
+      this.flamingoActive = false;
+      this.flamingoTimer = 0;
+      this.flamingoHold = 0;
+      this.flamingoHoldTarget = 1.6;
+      this.flamingoTriggered = [false, false];
+      this.balanceStars = [];
+      this.balanceStarSpawn = 2.0;
+      this.hooks.onProgress(0, 6);
+      this.hooks.onCallout("🪵 두 팔을 활짝 펴고 외나무다리 균형 잡기!", 2800);
+      this.sound.startBgm("adventure", 1.0);
     }
     this.hooks.onScore(0);
   }
@@ -381,9 +487,16 @@ export class MiniGameEngine {
   getAllHands(players, w, h) {
     const hands = [];
     players.forEach((p, idx) => {
-      const col = idx === 0 ? "#4AD3C8" : "#FF7D89";
-      hands.push({ x: p.leftHand.x * w, y: p.leftHand.y * h, player: idx, color: col, slot: idx * 2 });
-      hands.push({ x: p.rightHand.x * w, y: p.rightHand.y * h, player: idx, color: col, slot: idx * 2 + 1 });
+      const pid = p.id ?? idx;
+      const col = pid === 0 ? "#4AD3C8" : "#FF7D89";
+      const lConf = p.leftHand?.smoothConf ?? p.leftHand?.v ?? 1;
+      const rConf = p.rightHand?.smoothConf ?? p.rightHand?.v ?? 1;
+      if (lConf >= 0.20 && p.leftHand.x >= -0.05 && p.leftHand.x <= 1.05 && p.leftHand.y >= -0.05 && p.leftHand.y <= 1.05) {
+        hands.push({ x: p.leftHand.x * w, y: p.leftHand.y * h, player: pid, color: col, slot: pid * 2, conf: lConf });
+      }
+      if (rConf >= 0.20 && p.rightHand.x >= -0.05 && p.rightHand.x <= 1.05 && p.rightHand.y >= -0.05 && p.rightHand.y <= 1.05) {
+        hands.push({ x: p.rightHand.x * w, y: p.rightHand.y * h, player: pid, color: col, slot: pid * 2 + 1, conf: rConf });
+      }
     });
     return hands;
   }
@@ -405,6 +518,17 @@ export class MiniGameEngine {
 
     const minVel = SLASH_MIN_VEL[this.settings.speed] || 280;
     const rawHands = this.getAllHands(players, w, h);
+    const showHandVfx = HAND_VFX_GAMES.has(this.gameId);
+    const activeSlots = new Set(rawHands.map((hd) => hd.slot));
+
+    // Clean up inactive/absent player hand slots so stale trails & velocities NEVER ghost on screen!
+    for (let s = 0; s < 4; s++) {
+      if (!activeSlots.has(s)) {
+        this.prevHandPos[s] = null;
+        this.handEnergy[s] = 0;
+        if (this.trails[s] && this.trails[s].length > 0) this.trails[s].length = 0;
+      }
+    }
 
     this.hands = rawHands.map((hd) => {
       const prev = this.prevHandPos[hd.slot];
@@ -419,14 +543,27 @@ export class MiniGameEngine {
       const angle = Math.atan2(dy, dx);
 
       let e = this.handEnergy[hd.slot] || 0;
-      if (isSlashing) e = Math.min(1, e + dt * 7.0);
-      else e = Math.max(0, e - dt * 2.8);
+      if (showHandVfx) {
+        if (isSlashing) e = Math.min(1, e + dt * 7.0);
+        else e = Math.max(0, e - dt * 2.8);
+      } else {
+        e = 0;
+      }
       this.handEnergy[hd.slot] = e;
       this.prevHandPos[hd.slot] = { x: hd.x, y: hd.y };
 
+      // 과일 팡팡에서 손을 아주 크게 휘두를 때만 은은한 칼날 바람 소리(Swoosh)
+      this.swooshCooldown[hd.slot] = Math.max(0, (this.swooshCooldown[hd.slot] || 0) - dt);
+      if (this.gameId === "fruit" && !this.finished && speed >= minVel * 2.8 && this.swooshCooldown[hd.slot] <= 0) {
+        this.sound.playSwoosh();
+        this.swooshCooldown[hd.slot] = 0.72;
+      }
+
       const tr = this.trails[hd.slot];
       if (tr) {
-        if (e > 0.06) {
+        if (!showHandVfx) {
+          if (tr.length > 0) tr.length = 0;
+        } else if (e > 0.06) {
           tr.push({ x: hd.x, y: hd.y, color: hd.color, player: hd.player });
           if (tr.length > 13) tr.shift();
         } else if (tr.length > 0) {
@@ -468,11 +605,25 @@ export class MiniGameEngine {
       if (c.y > h + 30) c.y = -20;
     });
 
-    if (this.finished) return;
+    if (this.finished) {
+      // 피날레 아웃트로: 종료 후에도 풍선은 둥실 떠오르고, 3번 댄서들은 승리 댄스 유지!
+      if (this.gameId === "balloon") {
+        this.balls.forEach((b) => {
+          b.y -= 0.16 * dt;
+          b.x += Math.sin(this.elapsed * 3.0 + b.driftSeed) * 0.08 * dt;
+          b.rot += 0.9 * dt;
+        });
+      }
+      return;
+    }
 
     if (this.gameId === "fruit") this.updateFruitZen(dt, this.hands, w, h);
     else if (this.gameId === "balloon") this.updateBalloon(dt, players, this.hands, w, h);
     else if (this.gameId === "freeze") this.updateFreeze(dt, players, w, h);
+    else if (this.gameId === "animal") this.updateAnimalPose(dt, players, w, h);
+    else if (this.gameId === "jungle") this.updateJungle(dt, players, this.hands, w, h);
+    else if (this.gameId === "mole") this.updateMole(dt, players, this.hands, w, h);
+    else if (this.gameId === "balance") this.updateBalance(dt, players, this.hands, w, h);
   }
 
   /* ------------------------------------------------------------------
@@ -593,8 +744,8 @@ export class MiniGameEngine {
       }
     }
 
-    // 90초 종료 체크 (보스전 진행 중이면 보스를 깨거나 96초에 마무리)
-    if (this.zenElapsed >= this.zenDuration && (!this.boss || this.zenElapsed >= this.zenDuration + 6)) {
+    // 90초 종료 체크 (보스전 진행 중이면 보스를 깨거나 102초에 마무리)
+    if (this.zenElapsed >= this.zenDuration && (!this.boss || this.zenElapsed >= this.zenDuration + 12)) {
       this.boss = null;
       this.feverActive = false;
       this.spawnConfetti(w, 130);
@@ -676,7 +827,7 @@ export class MiniGameEngine {
               f.vy = -Math.max(h * 0.34, Math.abs(f.vy) * 0.65); // 위로 톡 튕겨 올라 한 번 더 베기 좋게!
               f.vx += Math.max(-240, Math.min(240, hd.vx * 0.25));
               f.vrot += (hd.vx >= 0 ? 1 : -1) * 4.5;
-              this.sound.playBossHit(f.maxHp - f.hp);
+              this.sound.playToughHit(f.maxHp - f.hp);
               this.spawnBurst(f.x, f.y, "#FFD43B", 0xffd43b, f.hp === 1 ? "한 번 더!!" : "통!", 1, hd.angle);
               return true;
             }
@@ -745,7 +896,7 @@ export class MiniGameEngine {
           if (dist < this.boss.r * 1.4 * hMult) {
             this.bossHits++;
             this.boss.shake = 1.15;
-            this.bossHitCooldown = 0.16;
+            this.bossHitCooldown = 0.19;
             this.sound.playBossHit(this.bossHits);
             const hitWords = ["퍽!", "쾅!", "짜릿!", "우지끈!", "파워 업!"];
             this.spawnSplatter(hd.x, hd.y, this.boss.hexColor, 0.95);
@@ -796,6 +947,7 @@ export class MiniGameEngine {
       r: Math.min(w, h) * 0.2,
       shake: 0,
     };
+    this.sound.playBossAppear();
     this.sound.setBgmRate(1.14);
     this.hooks.onCallout(
       this.settings.players === 2
@@ -886,7 +1038,7 @@ export class MiniGameEngine {
 
             const fxCol = b.golden ? "#FFB703" : isBeach ? "#38BDF8" : "#FF5C70";
             const fxHex = b.golden ? 0xffd43b : isBeach ? 0x38bdf8 : 0xff5c70;
-            this.sound.playBalloonHit(this.combo, b.golden);
+            this.sound.playBalloonHit(this.combo, b.golden, isBeach);
             const hitText = b.golden ? `황금 통! +${gained}` : isBeach ? `스핀 통! +${gained}` : `통! +${gained}`;
             this.spawnBalloonVfx(bx, by, fxCol, fxHex, hitText, b.golden ? 2 : 1);
 
@@ -992,64 +1144,807 @@ export class MiniGameEngine {
   }
 
   /* ------------------------------------------------------------------
-   * GAME 3: 얼음 땡! (6라운드 템포 상승)
+   * GAME 3: 네온 클럽 얼음 땡! (128 BPM 디스코 파티 + DJ 스크래치 + 실시간 움직임 감지 페널티)
    * ------------------------------------------------------------------ */
   updateFreeze(dt, players, w, h) {
     const rawMotion = players.reduce((acc, p) => acc + (p.motion || 0), 0);
-    this.emaMotion = 0.25 * rawMotion + 0.75 * this.emaMotion;
+    const avgMotion = rawMotion / Math.max(1, players.length);
+    this.emaMotion = 0.3 * avgMotion + 0.7 * this.emaMotion;
     this.phaseTimer -= dt;
 
     if (this.phase === "dance") {
-      if (this.emaMotion > 0.02) {
-        this.danceEnergy = Math.min(1, this.danceEnergy + dt * 0.9);
+      this.isWiggling = false;
+      this.freezeWiggleTime = 0;
+      this.freezeElapsed = 0;
+      if (this.emaMotion > 0.015) {
+        this.danceEnergy = Math.min(1, this.danceEnergy + dt * 1.15);
+      } else {
+        this.danceEnergy = Math.max(0.25, this.danceEnergy - dt * 0.45);
       }
       if (this.phaseTimer <= 0) {
+        const freezeDurs = [3.4, 3.8, 4.2, 4.6, 4.8];
+        this.freezeDuration = freezeDurs[Math.min(this.round, freezeDurs.length - 1)];
         this.phase = "freeze";
-        this.phaseTimer = 2.8;
+        this.phaseTimer = this.freezeDuration;
+        this.freezeElapsed = 0;
         this.freezeHold = 0;
-        this.sound.stopBgm();
+        this.freezeWiggleTime = 0;
+        this.wiggleSfxCooldown = 0;
+        this.isWiggling = false;
+        this.screenFlash = 0.45;
+        this.screenFlashHex = 0x38bdf8;
+        this.screenShake = 0.55;
+        this.sound.pauseBgm();
         this.sound.playFreezeCue();
         const isLast = this.round === this.roundsTotal - 1;
-        this.hooks.onCallout(isLast ? "마지막! 만세하고 얼음!!" : "얼음!! 움직이지 마세요!", 2500);
+        this.hooks.onCallout(isLast ? "마지막! 만세하고 얼음!!" : "얼음!! 조명 정지! 움직이지 마세요!", 2600);
       }
     } else {
-      const threshold = this.settings.speed === "slow" ? 0.14 : 0.095;
-      if (this.emaMotion < threshold) {
-        this.freezeHold += dt;
+      this.freezeElapsed = (this.freezeElapsed || 0) + dt;
+      this.wiggleSfxCooldown = Math.max(0, (this.wiggleSfxCooldown || 0) - dt);
+      const threshold = this.settings.speed === "slow" ? 0.055 : this.settings.speed === "fast" ? 0.028 : 0.038;
+
+      // 0.55초 반응 유예 시간 후 움직임 정밀 감지!
+      if (this.freezeElapsed > 0.55) {
+        if (this.emaMotion > threshold) {
+          this.isWiggling = true;
+          this.freezeWiggleTime = (this.freezeWiggleTime || 0) + dt;
+          this.screenShake = Math.max(this.screenShake, 0.32);
+          if (this.wiggleSfxCooldown <= 0) {
+            this.wiggleSfxCooldown = 0.48;
+            this.sound.playFreezeWiggle();
+            this.spawnBurst(w * 0.5, h * 0.34, "#FF4757", 0xff4757, "움찔!! 멈춰요!!", 1);
+          }
+        } else {
+          this.isWiggling = false;
+          this.freezeHold += dt;
+        }
+      } else {
+        this.isWiggling = false;
       }
+
       if (this.phaseTimer <= 0) {
         this.round++;
-        this.score += 5;
+        const wiggle = this.freezeWiggleTime || 0;
+        if (wiggle >= 0.48) {
+          // 움직여서 들킴! (페널티: +0점 + 부저음 + 빨간 플래시)
+          this.sound.playFreezeFail();
+          this.screenFlash = 0.45;
+          this.screenFlashHex = 0xff4757;
+          this.screenShake = 0.7;
+          this.spawnBurst(w * 0.5, h * 0.46, "#FF4757", 0xff4757, "움직여서 들켰어요! +0", 2);
+        } else if (wiggle >= 0.14) {
+          // 조금 움찔했지만 아슬아슬 세이프!
+          this.freezeSuccessCount = (this.freezeSuccessCount || 0) + 1;
+          this.score += 2;
+          this.sound.playBounce();
+          this.spawnBurst(w * 0.5, h * 0.46, "#FFD43B", 0xffd43b, "아슬아슬 세이프! +2", 2);
+        } else {
+          // 완벽 얼음!
+          this.freezeSuccessCount = (this.freezeSuccessCount || 0) + 1;
+          this.score += 5;
+          this.sound.playDiscoClear();
+          this.spawnBurst(w * 0.5, h * 0.46, "#FF2D95", 0xff2d95, "완벽 얼음!! +5", 2);
+        }
         this.hooks.onScore(this.score);
         this.hooks.onProgress(this.round, this.roundsTotal);
-        this.sound.playGoldenPop();
-        this.spawnBurst(w * 0.5, h * 0.42, "#48D1CC", 0x48d1cc, "완벽 성공! +5", 2);
+        this.isWiggling = false;
 
         if (this.round >= this.roundsTotal) {
-          this.spawnConfetti(w, 110);
-          this.finishGame("공룡 눈을 피해 6라운드 얼음 땡 대성공!");
+          const okCount = this.freezeSuccessCount || 0;
+          this.sound.playClubAirhorn();
+          this.spawnConfetti(w, 130);
+          this.finishGame(`네온 클럽 5라운드 중 ${okCount}번 얼음 성공! ⭐ ${this.score}점!`);
         } else {
           this.phase = "dance";
-          this.phaseTimer = Math.max(3.0, 4.2 - this.round * 0.2);
-          this.danceEnergy = 0;
-          this.hooks.onCallout("땡! 더 신나게 흔들어요!", 2200);
-          this.sound.startBgm("freeze", Math.min(1.22, 1.0 + this.round * 0.045));
+          // 여유로운 6.8~9.0초 랜덤 댄스 타임 -> 전체 약 1분 구성!
+          this.phaseTimer = 6.8 + Math.random() * 2.2;
+          this.danceEnergy = 0.55;
+          this.screenFlash = 0.42;
+          this.screenFlashHex = 0xff2d95;
+          this.sound.playClubAirhorn();
+          const joinMsg =
+            this.round === 1
+              ? "디스코 모모 합류!! 둘이 함께 신나게 춤춰요!!"
+              : this.round === 3
+              ? "디스코 포포 합류!! 3마리 완전체 클럽 떼춤!!"
+              : wiggle >= 0.48
+              ? "다음엔 꽁꽁! 땡!! 다시 신나게 흔들어요!!"
+              : "땡!! 디스코 타임! 신나게 흔들어요!!";
+          this.hooks.onCallout(joinMsg, 2600);
+          this.sound.setBgmRate(Math.min(1.18, 1.0 + this.round * 0.04));
+          this.sound.resumeBgm();
         }
       }
     }
+  }
+
+  /* ------------------------------------------------------------------
+   * GAME 4: 동물 흉내 포즈 따라하기 (14관절 전신 체형 정규화 판정 + 7종 릴레이)
+   * ------------------------------------------------------------------ */
+  checkSinglePlayerAnimalPose(p, animalId) {
+    if (!p) return false;
+    const m = p.metrics;
+    // 개발자(마우스) 테스트 모드 폴백: 마우스 위치로 포즈 시뮬레이션
+    if (!m) {
+      const hy = Math.min(p.leftHand.y, p.rightHand.y);
+      if (animalId === "giraffe" || animalId === "starfish") return hy < 0.34;
+      if (animalId === "frog") return hy > 0.66;
+      return hy < 0.56;
+    }
+
+    const headY = p.head.y;
+    const shY = m.shoulderY;
+    const th = m.torsoH;
+    const sw = m.shoulderW;
+    const lH = p.leftHand;
+    const rH = p.rightHand;
+    const bothUp = lH.y < headY + th * 0.08 && rH.y < headY + th * 0.08;
+    const bothAboveShoulder = lH.y < shY - th * 0.05 && rH.y < shY - th * 0.05;
+
+    switch (animalId) {
+      case "giraffe":
+        return bothUp && Math.max(m.lElbowAngle, m.rElbowAngle) > 115;
+      case "eagle":
+        return (
+          m.wristSpan > sw * 1.75 &&
+          Math.abs(lH.y - shY) < th * 0.55 &&
+          Math.abs(rH.y - shY) < th * 0.55
+        );
+      case "crab": {
+        const lEl = p.elbows?.[0];
+        const rEl = p.elbows?.[1];
+        const handsAboveElbows = lEl && rEl ? lH.y < lEl.y && rH.y < rEl.y : bothAboveShoulder;
+        const elbowsBent = m.lElbowAngle < 135 && m.rElbowAngle < 135;
+        return handsAboveElbows && elbowsBent && m.wristSpan > sw * 1.15;
+      }
+      case "flamingo":
+        return (
+          m.footLift > th * 0.22 ||
+          (!m.lowerVisible && m.wristSpan > sw * 1.65 && m.torsoLean > 0.12)
+        );
+      case "frog":
+        return m.isSquatting || (lH.y > m.hipY - th * 0.1 && rH.y > m.hipY - th * 0.1 && p.head.y > 0.52);
+      case "elephant": {
+        const bothSameSide =
+          (lH.x < p.centerX - sw * 0.2 && rH.x < p.centerX + sw * 0.3) ||
+          (lH.x > p.centerX - sw * 0.3 && rH.x > p.centerX + sw * 0.2);
+        return m.torsoLean > 0.14 || bothSameSide;
+      }
+      case "starfish":
+        return (bothAboveShoulder || m.wristSpan > sw * 1.7) && (m.ankleSpan > sw * 1.15 || bothUp);
+      default:
+        return bothUp;
+    }
+  }
+
+  updateAnimalPose(dt, players, w, h) {
+    if (this.animalPause > 0) {
+      this.animalPause -= dt;
+      return;
+    }
+    const cur = ANIMAL_POSES[this.animalIndex];
+    if (!cur) return;
+
+    this.animalTimer = Math.max(0, this.animalTimer - dt);
+
+    let matchCount = 0;
+    for (const p of players) {
+      if (this.checkSinglePlayerAnimalPose(p, cur.id)) matchCount++;
+    }
+    this.animalMatch = matchCount > 0;
+
+    if (this.animalMatch) {
+      this.animalGraceTimer = 0.15; // 4-6세 아이의 미세 흔들림에도 0.15초 관대 유예!
+      // 2인 모드에서 둘 다 성공하면 1.35배속 슈퍼 게이지!
+      const boost = matchCount >= 2 ? 1.35 : 1.0;
+      const prevStep = Math.floor((this.animalHold / this.animalHoldTarget) * 3);
+      this.animalHold = Math.min(this.animalHoldTarget, this.animalHold + dt * boost);
+      const nextStep = Math.floor((this.animalHold / this.animalHoldTarget) * 3);
+      if (nextStep > prevStep && nextStep < 3) {
+        this.sound.playClick();
+      }
+    } else if ((this.animalGraceTimer || 0) > 0) {
+      this.animalGraceTimer = Math.max(0, this.animalGraceTimer - dt);
+    } else {
+      this.animalHold = Math.max(0, this.animalHold - dt * 0.45);
+    }
+
+    const cleared = this.animalHold >= this.animalHoldTarget;
+    const timedOut = this.animalTimer <= 0;
+
+    if (cleared || timedOut) {
+      if (cleared) {
+        this.animalCleared[this.animalIndex] = true;
+        this.animalSuccessCount++;
+        this.score += 10;
+        this.sound.playGoldenPop();
+        this.screenFlash = 0.36;
+        this.screenFlashHex = cur.hex;
+        this.spawnBurst(w * 0.5, h * 0.45, cur.color, cur.hex, `${cur.name} 완벽 변신! +10`, 2);
+      } else {
+        this.score += 2;
+        this.sound.playBounce();
+        this.spawnBurst(w * 0.5, h * 0.45, "#94A3B8", 0x94a3b8, "아쉬워요! 다음 동물 도전! +2", 1);
+      }
+      this.hooks.onScore(this.score);
+      this.animalIndex++;
+      this.hooks.onProgress(this.animalIndex, ANIMAL_POSES.length);
+
+      if (this.animalIndex >= ANIMAL_POSES.length) {
+        this.spawnConfetti(w, 140);
+        this.finishGame(`동물 7종 중 ${this.animalSuccessCount}마리 완벽 변신! ⭐ ${this.score}점!`);
+      } else {
+        const next = ANIMAL_POSES[this.animalIndex];
+        this.animalTimer = this.animalTimeLimit;
+        this.animalHold = 0;
+        this.animalMatch = false;
+        this.animalGraceTimer = 0;
+        this.animalPause = 0.85;
+        this.hooks.onCallout(`${next.name}! ${next.cue}`, 2800);
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * GAME 5: 달려라! 정글 모험 (60초, 5체크포인트 — 달리기 · 웅크리기 · 점프 만세!)
+   * ------------------------------------------------------------------ */
+  startJunglePhase(phase, w, h) {
+    this.junglePhase = phase;
+    this.junglePhaseProgress = 0;
+    this.jungleActiveDetected = false;
+    this.junglePhaseTransitionDelay = 0;
+    this.jungleSquatCleared = false;
+    this.jungleStars = [];
+    this.jungleJumpWaveCd = 0;
+
+    if (phase === "run") {
+      this.junglePhaseTimer = 5.4;
+      this.jungleVineY = -0.28;
+      this.hooks.onCallout("🏃 제자리 달리기! 무릎을 번갈아 톡톡!!", 2200);
+    } else if (phase === "squat") {
+      this.junglePhaseTimer = 6.2;
+      this.jungleVineY = -0.18;
+      this.sound.playWindWhoosh();
+      this.hooks.onCallout("🌿 숙여요! 웅크리기(스쿼트)로 덩굴 통과!!", 2600);
+    } else if (phase === "jump") {
+      this.junglePhaseTimer = 6.4;
+      this.jungleVineY = -0.28;
+      const xs = [0.22, 0.40, 0.60, 0.78];
+      this.jungleStars = xs.map((nx, i) => ({
+        uid: this.uidSeq++,
+        x: nx,
+        y: i % 2 === 0 ? 0.20 : 0.26,
+        baseY: i % 2 === 0 ? 0.20 : 0.26,
+        r: 0.068,
+        collected: false,
+        seed: i * 1.4,
+      }));
+      this.hooks.onCallout("⭐ 점프 만세! 머리 위 반짝별을 터뜨려요!!", 2600);
+    }
+  }
+
+  advanceJunglePhase(w, h) {
+    this.junglePhaseIdx = (this.junglePhaseIdx + 1) % this.junglePhaseSeq.length;
+    this.startJunglePhase(this.junglePhaseSeq[this.junglePhaseIdx], w, h);
+  }
+
+  updateJungle(dt, players, hands, w, h) {
+    const spd = SPEED_MULT[this.settings.speed] || 1.0;
+    const hMult = HITBOX_MULT[this.settings.speed] || 1.16;
+
+    this.jungleElapsed += dt;
+    if (this.jungleElapsed >= this.jungleDuration) {
+      this.jungleTrackProgress = 1;
+      this.jungleCheckpoints = 5;
+      this.hooks.onProgress(5, 5);
+      this.spawnConfetti(w, 140);
+      this.finishGame(`정글 모험 5개 체크포인트 완주!! ⭐ ${this.score}점 대모험 성공!`);
+      return;
+    }
+
+    // Track baseline head height smoothly during run phase for jump detection
+    players.forEach((p, idx) => {
+      if (this.junglePhase === "run" && p.head) {
+        this.jungleBaselineHeadY[idx] = (this.jungleBaselineHeadY[idx] || p.head.y) * 0.94 + p.head.y * 0.06;
+      }
+    });
+
+    // Check 5 jungle checkpoints along the top progress track
+    const reachedCp = Math.min(5, Math.floor(this.jungleTrackProgress * 5 + 0.001));
+    if (reachedCp > this.jungleCheckpoints) {
+      this.jungleCheckpoints = reachedCp;
+      this.hooks.onProgress(this.jungleCheckpoints, 5);
+      this.score += 5;
+      this.hooks.onScore(this.score);
+      this.sound.playMilestone();
+      this.screenFlash = 0.28;
+      this.screenFlashHex = 0x22ff88;
+      this.spawnBurst(w * 0.5, h * 0.26, "#22C55E", 0x22ff88, `🏁 체크포인트 ${reachedCp}/5 통과! +5`, 2);
+      if (reachedCp >= 4) {
+        this.feverActive = true;
+        this.sound.setBgmRate(1.1);
+      }
+    }
+
+    if (this.junglePhaseTransitionDelay > 0) {
+      this.junglePhaseTransitionDelay -= dt;
+      if (this.junglePhaseTransitionDelay <= 0) {
+        this.advanceJunglePhase(w, h);
+      }
+      return;
+    }
+
+    this.junglePhaseTimer -= dt;
+
+    if (this.junglePhase === "run") {
+      let runners = 0;
+      players.forEach((p, idx) => {
+        const knL = p.knees?.[0];
+        const knR = p.knees?.[1];
+        const kneeDiff = knL && knR ? knL.y - knR.y : 0;
+        const prevDiff = this.junglePrevKneeDiff[idx] || 0;
+        this.junglePrevKneeDiff[idx] = kneeDiff;
+        const altKnee = Math.abs(kneeDiff - prevDiff) > 0.012;
+        const activeMotion = (p.motion || 0) > 0.025 || altKnee;
+        if (activeMotion) runners++;
+      });
+
+      this.jungleActiveDetected = runners > 0;
+      if (runners > 0) {
+        const boost = runners >= 2 ? 1.35 : 1.0;
+        this.junglePhaseProgress = Math.min(1, this.junglePhaseProgress + dt * 0.27 * boost * spd);
+        this.jungleTrackProgress = Math.min(1, this.jungleTrackProgress + dt * 0.028 * boost);
+        this.jungleRunTick += dt * boost;
+        if (this.jungleRunTick >= 0.62) {
+          this.jungleRunTick = 0;
+          this.score += 1;
+          this.hooks.onScore(this.score);
+          this.sound.playPop(this.combo);
+          this.spawnBurst(w * (0.35 + Math.random() * 0.3), h * 0.72, "#22C55E", 0x38ef7d, "달려! +1", 1);
+        }
+      } else {
+        // Gentle baseline progress so young toddlers never get stuck
+        this.jungleTrackProgress = Math.min(1, this.jungleTrackProgress + dt * 0.006);
+      }
+
+      if (this.junglePhaseProgress >= 1 || this.junglePhaseTimer <= 0) {
+        this.advanceJunglePhase(w, h);
+      }
+    } else if (this.junglePhase === "squat") {
+      // Smoothly lower the lush 3D clay jungle vine across upper-mid screen
+      const targetVineY = this.jungleSquatCleared ? -0.22 : 0.36;
+      this.jungleVineY += (targetVineY - this.jungleVineY) * Math.min(1, dt * 4.5);
+
+      let squatters = 0;
+      players.forEach((p) => {
+        const isLow = Boolean(p.metrics?.isSquatting) || (p.head && p.head.y > 0.56);
+        if (isLow) squatters++;
+      });
+      this.jungleActiveDetected = squatters > 0;
+
+      if (squatters > 0 && !this.jungleSquatCleared) {
+        const boost = squatters >= 2 ? 1.35 : 1.0;
+        const prevStep = Math.floor(this.junglePhaseProgress * 3);
+        this.junglePhaseProgress = Math.min(1, this.junglePhaseProgress + (dt / 1.25) * boost);
+        const nextStep = Math.floor(this.junglePhaseProgress * 3);
+        if (nextStep > prevStep && nextStep < 3) this.sound.playClick();
+
+        if (this.junglePhaseProgress >= 1) {
+          this.jungleSquatCleared = true;
+          this.score += 8;
+          this.hooks.onScore(this.score);
+          this.jungleTrackProgress = Math.min(1, this.jungleTrackProgress + 0.09);
+          this.registerCombo(w * 0.5, h * 0.42);
+          this.sound.playJumpStar(this.combo);
+          this.screenFlash = 0.32;
+          this.screenFlashHex = 0x22ff88;
+          this.spawnBurst(w * 0.5, h * 0.42, "#22C55E", 0x22ff88, "덩굴 쏙 통과!! +8", 2);
+          this.junglePhaseTransitionDelay = 0.72;
+        }
+      } else if (!this.jungleSquatCleared) {
+        this.junglePhaseProgress = Math.max(0, this.junglePhaseProgress - dt * 0.35);
+      }
+
+      if (!this.jungleSquatCleared && this.junglePhaseTimer <= 0) {
+        this.score += 2;
+        this.hooks.onScore(this.score);
+        this.jungleTrackProgress = Math.min(1, this.jungleTrackProgress + 0.04);
+        this.sound.playBounce();
+        this.spawnBurst(w * 0.5, h * 0.42, "#FFD43B", 0xffd43b, "잘했어요! 계속 달려요! +2", 1);
+        this.advanceJunglePhase(w, h);
+      }
+    } else if (this.junglePhase === "jump") {
+      this.jungleJumpWaveCd = Math.max(0, this.jungleJumpWaveCd - dt);
+      let anyJumping = false;
+
+      // 1) Direct hand touch on overhead stars + 2) Both-hands-up jump wave smash!
+      players.forEach((p, idx) => {
+        const shY = p.metrics?.shoulderY ?? p.centerY ?? 0.46;
+        const headY = p.head?.y ?? 0.38;
+        const bothHandsUp = p.leftHand.y < shY - 0.06 && p.rightHand.y < shY - 0.06;
+        const baseY = this.jungleBaselineHeadY[idx] || 0.42;
+        const headRises = headY < baseY - 0.028 || Math.min(p.leftHand.y, p.rightHand.y) < 0.29;
+        if (bothHandsUp && headRises) anyJumping = true;
+      });
+      this.jungleActiveDetected = anyJumping;
+
+      const smashStar = (st) => {
+        st.collected = true;
+        const sx = st.x * w;
+        const sy = st.y * h;
+        this.score += 5;
+        this.hooks.onScore(this.score);
+        this.jungleTrackProgress = Math.min(1, this.jungleTrackProgress + 0.025);
+        this.registerCombo(sx, sy);
+        this.sound.playJumpStar(this.combo);
+        this.spawnBurst(sx, sy, "#FFB703", 0xffd43b, "점프 별 팡! +5", 2);
+      };
+
+      this.jungleStars.forEach((st) => {
+        if (st.collected) return;
+        st.y = st.baseY + Math.sin(this.elapsed * 3.8 + st.seed) * 0.025;
+        const sx = st.x * w;
+        const sy = st.y * h;
+        const sr = Math.min(w, h) * st.r;
+        for (const hd of hands) {
+          if (Math.hypot(hd.x - sx, hd.y - sy) < sr * 1.65 * hMult) {
+            smashStar(st);
+            break;
+          }
+        }
+      });
+
+      if (anyJumping && this.jungleJumpWaveCd <= 0) {
+        const remaining = this.jungleStars.filter((s) => !s.collected);
+        if (remaining.length > 0) {
+          smashStar(remaining[0]);
+          this.jungleJumpWaveCd = 0.34;
+        }
+      }
+
+      const collected = this.jungleStars.filter((s) => s.collected).length;
+      const total = Math.max(1, this.jungleStars.length);
+      this.junglePhaseProgress = collected / total;
+
+      if (collected >= total) {
+        this.jungleTrackProgress = Math.min(1, this.jungleTrackProgress + 0.04);
+        this.screenFlash = 0.28;
+        this.screenFlashHex = 0xffe875;
+        this.junglePhaseTransitionDelay = 0.62;
+      } else if (this.junglePhaseTimer <= 0) {
+        this.advanceJunglePhase(w, h);
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * GAME 6: 두더지 손·발 하이파이브 (60초 — 상단 3구멍 손 하이파이브 + 하단 3구멍 발차기/숙여 터치 + 40초 피버!)
+   * ------------------------------------------------------------------ */
+  updateMole(dt, players, hands, w, h) {
+    const spd = SPEED_MULT[this.settings.speed] || 1.0;
+    const hMult = HITBOX_MULT[this.settings.speed] || 1.16;
+
+    this.moleElapsed += dt;
+    this.hooks.onProgress(Math.min(6, Math.floor((this.moleElapsed / this.moleDuration) * 6)), 6);
+
+    if (!this.moleFeverTriggered && this.moleElapsed >= 40.0) {
+      this.moleFeverTriggered = true;
+      this.feverActive = true;
+      this.sound.playFeverStart();
+      this.sound.setBgmRate(1.14);
+      this.screenFlash = 0.4;
+      this.screenFlashHex = 0xffd43b;
+      this.hooks.onCallout("🔥 40초 피버 웨이브!! 두더지 대파티!!", 3200);
+    }
+
+    if (this.moleElapsed >= this.moleDuration) {
+      this.feverActive = false;
+      this.spawnConfetti(w, 140);
+      this.finishGame(`두더지 손·발 하이파이브 ⭐ ${this.score}점 대성공!`);
+      return;
+    }
+
+    // Spawn moles into idle holes (balanced top/bottom rows)
+    const isFever = this.moleFeverTriggered;
+    const maxActive = isFever ? 4 : this.settings.players === 2 ? 3 : 2;
+    const activeCount = this.moleHoles.filter((hl) => hl.state !== "idle").length;
+
+    this.moleSpawnTimer -= dt;
+    if (this.moleSpawnTimer <= 0 && activeCount < maxActive) {
+      const wantRow = Math.random() < 0.65 ? this.moleNextRow : this.moleNextRow === "top" ? "bottom" : "top";
+      let candidates = this.moleHoles.filter((hl) => hl.state === "idle" && hl.cooldown <= 0 && hl.row === wantRow);
+      if (!candidates.length) {
+        candidates = this.moleHoles.filter((hl) => hl.state === "idle" && hl.cooldown <= 0);
+      }
+      if (candidates.length > 0) {
+        const pick = candidates[Math.floor(Math.random() * candidates.length)];
+        const isGold = Math.random() < (isFever ? 0.34 : 0.24);
+        pick.state = "rising";
+        pick.pop = 0;
+        pick.golden = isGold;
+        pick.kind = isGold ? "mole_gold" : "mole_cute";
+        pick.holdTimer = (isGold ? 2.4 : 3.0) / spd;
+        pick.bonkTimer = 0;
+        this.moleNextRow = pick.row === "top" ? "bottom" : "top";
+      }
+      this.moleSpawnTimer = (isFever ? 0.42 : 0.86) / spd;
+    }
+
+    // Build hit points: upper row uses HANDS; lower row uses FEET (ankles + knees) OR crouching HANDS!
+    const lowerTargets = [];
+    players.forEach((p, idx) => {
+      const col = idx === 0 ? "#4AD3C8" : "#FF7D89";
+      (p.ankles || []).forEach((a) => {
+        if (a && (a.v ?? 1) > 0.2) lowerTargets.push({ x: a.x * w, y: a.y * h, isFoot: true, player: idx, color: col });
+      });
+      (p.knees || []).forEach((k) => {
+        if (k && (k.v ?? 1) > 0.25) lowerTargets.push({ x: k.x * w, y: k.y * h, isFoot: true, player: idx, color: col });
+      });
+    });
+    hands.forEach((hd) => {
+      lowerTargets.push({ x: hd.x, y: hd.y, isFoot: false, player: hd.player, color: hd.color });
+    });
+
+    const holeR = Math.min(w, h) * 0.095;
+
+    this.moleHoles.forEach((hl) => {
+      hl.cooldown = Math.max(0, hl.cooldown - dt);
+
+      if (hl.state === "rising") {
+        hl.pop = Math.min(1, hl.pop + dt * 4.4);
+        if (hl.pop >= 1) hl.state = "up";
+      } else if (hl.state === "up") {
+        hl.holdTimer -= dt;
+        if (hl.holdTimer <= 0) hl.state = "hiding";
+      } else if (hl.state === "bonked") {
+        hl.bonkTimer -= dt;
+        hl.pop = Math.max(0, hl.pop - dt * 2.2);
+        if (hl.bonkTimer <= 0) {
+          hl.state = "idle";
+          hl.pop = 0;
+          hl.cooldown = isFever ? 0.35 : 0.7;
+        }
+      } else if (hl.state === "hiding") {
+        hl.pop = Math.max(0, hl.pop - dt * 3.8);
+        if (hl.pop <= 0) {
+          hl.state = "idle";
+          hl.cooldown = isFever ? 0.3 : 0.65;
+        }
+      }
+
+      // Hit check when mole is popped up enough
+      if ((hl.state === "rising" || hl.state === "up") && hl.pop > 0.35) {
+        const mx = hl.x * w;
+        const my = hl.y * h - holeR * 0.38 * hl.pop;
+        const hitPool = hl.row === "top" ? hands : lowerTargets;
+
+        for (const tg of hitPool) {
+          const dist = Math.hypot(tg.x - mx, tg.y - my);
+          if (dist < holeR * 1.48 * hMult) {
+            hl.state = "bonked";
+            hl.bonkTimer = 0.36;
+            const basePts = hl.golden ? 5 : 2;
+            const comboBonus = this.combo >= 8 ? 2 : this.combo >= 4 ? 1 : 0;
+            const gained = basePts + comboBonus;
+            this.score += gained;
+            this.hooks.onScore(this.score);
+            this.registerCombo(mx, my);
+            this.sound.playMoleBonk(this.combo);
+            if (hl.golden) this.sound.playGoldenPop();
+
+            const fxCol = hl.golden ? "#FFB703" : hl.row === "top" ? "#38BDF8" : "#22C55E";
+            const fxHex = hl.golden ? 0xffd43b : hl.row === "top" ? 0x38bdf8 : 0x22ff88;
+            const msg = hl.golden
+              ? `황금 두더지!! +${gained}`
+              : hl.row === "top"
+              ? `하이파이브! +${gained}`
+              : tg.isFoot
+              ? `발차기 팡! +${gained}`
+              : `터치 팡! +${gained}`;
+            this.spawnBurst(mx, my, fxCol, fxHex, msg, hl.golden ? 2 : 1);
+            break;
+          }
+        }
+      }
+    });
+  }
+
+  /* ------------------------------------------------------------------
+   * GAME 7: 흔들흔들 외나무다리 균형잡기 (60초 — 바람 맞서 기울이기 + 넓은 팔 안정화 + 플라밍고 보너스 + 하늘 별잡기!)
+   * ------------------------------------------------------------------ */
+  updateBalance(dt, players, hands, w, h) {
+    const spd = SPEED_MULT[this.settings.speed] || 1.0;
+    const hMult = HITBOX_MULT[this.settings.speed] || 1.16;
+
+    this.balanceElapsed += dt;
+    this.hooks.onProgress(Math.min(6, Math.floor((this.balanceElapsed / this.balanceDuration) * 6)), 6);
+
+    if (this.balanceElapsed >= this.balanceDuration) {
+      this.feverActive = false;
+      this.spawnConfetti(w, 140);
+      this.finishGame(`외나무다리 균형잡기 완주!! ⭐ ${this.score}점 균형 마스터!`);
+      return;
+    }
+
+    // 1) Playful Wind Gust Cycles
+    this.windTimer -= dt;
+    if (this.windTimer <= 0) {
+      if (this.windActive) {
+        this.windActive = false;
+        this.windDir = 0;
+        this.windTimer = 2.6 / spd;
+      } else {
+        this.windActive = true;
+        this.windDir = Math.random() < 0.5 ? 1 : -1;
+        this.windTimer = 4.6;
+        this.sound.playWindWhoosh();
+        const msg =
+          this.windDir > 0
+            ? "🌬️ 왼쪽 바람! 오른쪽으로 기울여요!"
+            : "🌬️ 오른쪽 바람! 왼쪽으로 기울여요!";
+        this.hooks.onCallout(msg, 3000);
+      }
+    }
+    const targetWind = this.windActive ? 1.0 : 0.0;
+    this.windStrength += (targetWind - this.windStrength) * Math.min(1, dt * 3.5);
+
+    // 2) Occasional Flamingo One-Foot Bonus Challenge (~19s and ~43s)
+    const flamingoMarks = [19, 43];
+    flamingoMarks.forEach((mark, i) => {
+      if (!this.flamingoTriggered[i] && this.balanceElapsed >= mark) {
+        this.flamingoTriggered[i] = true;
+        this.flamingoActive = true;
+        this.flamingoTimer = 6.5;
+        this.flamingoHold = 0;
+        this.hooks.onCallout("🦩 한 발 들고 균형! 보너스 도전!!", 3000);
+      }
+    });
+
+    if (this.flamingoActive) {
+      this.flamingoTimer -= dt;
+      const lifted = players.some((p) => {
+        const m = p.metrics;
+        if (!m) return false;
+        return m.footLift > (m.torsoH || 0.2) * 0.17;
+      });
+      if (lifted) {
+        this.flamingoHold = Math.min(this.flamingoHoldTarget, this.flamingoHold + dt);
+        if (this.flamingoHold >= this.flamingoHoldTarget) {
+          this.flamingoActive = false;
+          this.score += 10;
+          this.hooks.onScore(this.score);
+          this.sound.playGoldenPop();
+          this.screenFlash = 0.34;
+          this.screenFlashHex = 0xf472b6;
+          this.spawnBurst(w * 0.5, h * 0.45, "#EC4899", 0xf472b6, "🦩 한 발 균형 성공! +10", 2);
+        }
+      } else {
+        this.flamingoHold = Math.max(0, this.flamingoHold - dt * 0.5);
+      }
+      if (this.flamingoTimer <= 0) {
+        this.flamingoActive = false;
+      }
+    }
+
+    // 3) Read player torso lean + shoulder tilt + wide airplane arms!
+    let leanSum = 0;
+    let wideCount = 0;
+    players.forEach((p) => {
+      const m = p.metrics;
+      if (m) {
+        const sLean = (m.signedTorsoLean ?? 0) * 1.45 + (m.shoulderTilt ?? 0) * 0.55;
+        leanSum += Math.max(-1.0, Math.min(1.0, sLean));
+        if (m.wristSpan > m.shoulderW * 1.4) wideCount++;
+      }
+    });
+    const avgLean = players.length > 0 ? leanSum / players.length : 0;
+    this.balanceWideArms = wideCount > 0;
+
+    // 4) Realistic Bridge Tilt Physics (Wind pushes bridge; player lean & wide arms stabilize!)
+    const windTorque = this.windActive
+      ? -this.windDir * this.windStrength * 0.52 * spd
+      : Math.sin(this.elapsed * 1.55) * 0.11;
+    const playerTorque = avgLean * 0.72;
+    const dampingSpring = -this.bridgeAngle * (this.balanceWideArms ? 2.5 : 1.5);
+    this.bridgeVel += (windTorque + playerTorque + dampingSpring) * dt * 2.1;
+    this.bridgeVel *= Math.exp(-3.5 * dt);
+    this.bridgeAngle = Math.max(-0.42, Math.min(0.42, this.bridgeAngle + this.bridgeVel * dt));
+
+    this.balanceInSafe = Math.abs(this.bridgeAngle) < 0.16;
+    this.balanceWobbleCd = Math.max(0, this.balanceWobbleCd - dt);
+
+    if (this.balanceInSafe) {
+      const mult = (this.balanceWideArms ? 1.4 : 1.0) * (this.settings.players === 2 ? 1.15 : 1.0);
+      this.balancePointAccum += dt * mult;
+      this.balanceShowerAccum += dt;
+      if (this.balancePointAccum >= 0.72) {
+        this.balancePointAccum = 0;
+        const pts = this.balanceWideArms ? 2 : 1;
+        this.score += pts;
+        this.hooks.onScore(this.score);
+        if (this.balanceShowerAccum >= 1.5) {
+          this.balanceShowerAccum = 0;
+          this.sound.playPop(Math.min(6, Math.floor(this.balanceElapsed / 8)));
+          this.spawnBurst(w * 0.5, h * 0.62, "#22C55E", 0x22ff88, this.balanceWideArms ? "비행기 균형! +2" : "균형 굿! +1", 1);
+        }
+      }
+    } else if (Math.abs(this.bridgeAngle) > 0.32 && this.balanceWobbleCd <= 0) {
+      this.balanceWobbleCd = 1.6;
+      this.sound.playBounce();
+      this.spawnBurst(w * 0.5, h * 0.60, "#FFB703", 0xffd43b, "어이쿠! 중심 잡아요!", 1);
+    }
+
+    // 5) Floating star_3d stars to catch while balancing!
+    this.balanceStarSpawn -= dt;
+    if (this.balanceStarSpawn <= 0 && this.balanceStars.length < 3) {
+      this.balanceStarSpawn = 2.8 / spd;
+      const fromLeft = Math.random() < 0.5;
+      this.balanceStars.push({
+        uid: this.uidSeq++,
+        x: fromLeft ? 0.08 : 0.92,
+        y: 0.28 + Math.random() * 0.20,
+        vx: (fromLeft ? 1 : -1) * (0.09 + Math.random() * 0.05) * spd,
+        r: 0.062,
+        seed: Math.random() * 6.28,
+      });
+    }
+
+    this.balanceStars = this.balanceStars.filter((st) => {
+      st.x += st.vx * dt;
+      const drawY = st.y + Math.sin(this.elapsed * 3.2 + st.seed) * 0.025;
+      const sx = st.x * w;
+      const sy = drawY * h;
+      const sr = Math.min(w, h) * st.r;
+
+      for (const hd of hands) {
+        if (Math.hypot(hd.x - sx, hd.y - sy) < sr * 1.65 * hMult) {
+          this.score += 3;
+          this.hooks.onScore(this.score);
+          this.registerCombo(sx, sy);
+          this.sound.playJumpStar(this.combo);
+          this.spawnBurst(sx, sy, "#FFB703", 0xffd43b, "하늘 별 캐치! +3", 2);
+          return false;
+        }
+      }
+      return st.x > -0.08 && st.x < 1.08;
+    });
   }
 
   finishGame(summaryText) {
     if (this.finished) return;
     this.finished = true;
     this.feverActive = false;
-    this.sound.stopBgm();
-    this.hooks.onCallout("");
+
+    // 1) 부드러운 BGM 페이드아웃 + 황금 피날레 플래시 + 축하 콜아웃!
+    this.sound.fadeOutBgm(1100);
+    this.sound.playMilestone();
+    this.screenFlash = 0.52;
+    this.screenFlashHex = 0xffe875;
+    this.hooks.onCallout("🎉 피니시!! 대성공!! 🎉", 2000);
+
+    // 2) 게임별 피날레 마무리 모션!
+    if (this.gameId === "fruit" && this.fruits.length > 0) {
+      this.fruits.forEach((f) => {
+        this.spawnSplatter(f.x, f.y, f.hexColor, 1.15);
+        this.spawnSlicedHalves(f.kind, f.x, f.y, f.r, -0.4);
+        this.spawnBurst(f.x, f.y, "#FFD43B", 0xffd43b, "팡!", 1);
+      });
+      this.fruits = [];
+    } else if (this.gameId === "freeze") {
+      // 얼음 땡!은 3마리 완전체 승리 댄스 상태로 전환해 축제를 이어감!
+      this.phase = "dance";
+      this.isWiggling = false;
+      this.round = this.roundsTotal;
+      this.danceEnergy = 0.9;
+    }
+
+    // 3) 1.85초간 생생한 피날레 축하 모션 후 통합 결과 팝업 부드럽게 표시!
     clearTimeout(this.finishTimerId);
     this.finishTimerId = setTimeout(() => {
       this.sound.playFanfare();
       this.hooks.onFinish(summaryText);
-    }, 750);
+    }, 1850);
   }
 
   renderFallback2D(ctx, players, w, h) {
@@ -1077,13 +1972,15 @@ export class MiniGameEngine {
         }
       }
     }
-    hands.forEach((hd) => {
-      ctx.beginPath();
-      ctx.arc(hd.x, hd.y, 20, 0, Math.PI * 2);
-      ctx.strokeStyle = hd.color;
-      ctx.lineWidth = 3;
-      ctx.stroke();
-    });
+    if (HAND_VFX_GAMES.has(this.gameId)) {
+      hands.forEach((hd) => {
+        ctx.beginPath();
+        ctx.arc(hd.x, hd.y, 20, 0, Math.PI * 2);
+        ctx.strokeStyle = hd.color;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      });
+    }
     ctx.restore();
   }
 }

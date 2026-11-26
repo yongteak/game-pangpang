@@ -11,6 +11,14 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showPause = false
 
+    // Global Single-Hand Air Cursor state (works across Select top bar, Settings, Ready, Clear & Pause!)
+    @State private var handTargets: [String: CGRect] = [:]
+    @State private var hoveredGlobalTarget: String? = nil
+    @State private var globalDwell: CGFloat = 0
+    @State private var globalCooldown: CGFloat = 0
+    @State private var globalAirTimer: Timer?
+    @State private var rootSize: CGSize = CGSize(width: 852, height: 393)
+
     // Ready & Countdown state
     @State private var readyHold: [CGFloat] = [0, 0]
     @State private var countdownVal = 3
@@ -37,13 +45,24 @@ struct ContentView: View {
             if screen == .home {
                 HomeScreenView(
                     settings: settings,
-                    onStart: { screen = .select },
+                    onStart: {
+                        if !settings.devMode {
+                            camera.start(expectedPlayers: settings.players, devMode: false)
+                        }
+                        screen = .select
+                    },
                     onOpenSettings: { showSettings = true }
                 )
             } else if screen == .select {
                 StageSelectView(
                     settings: settings,
-                    onBack: { screen = .home },
+                    camera: camera,
+                    hoveredGlobalTarget: hoveredGlobalTarget,
+                    modalActive: showSettings || showPause,
+                    onBack: {
+                        camera.stopCamera()
+                        screen = .home
+                    },
                     onSelectGame: { game in
                         selectedGame = game
                         enterReadyScreen()
@@ -74,9 +93,10 @@ struct ContentView: View {
                                 readyHold: readyHold,
                                 isCountdown: screen == .countdown,
                                 countdownVal: countdownVal,
+                                hoveredGlobalTarget: hoveredGlobalTarget,
                                 onBack: {
                                     stopReadyLoop()
-                                    camera.stopCamera()
+                                    if settings.devMode { camera.stopCamera() }
                                     screen = .select
                                 },
                                 onSkip: { startCountdown() }
@@ -85,6 +105,7 @@ struct ContentView: View {
 
                         if screen == .inGame {
                             InGameHUDView(
+                                gameType: selectedGame,
                                 score: score,
                                 progressDone: progressDone,
                                 progressTotal: progressTotal,
@@ -100,10 +121,11 @@ struct ContentView: View {
                         if screen == .clear {
                             ClearOverlayView(
                                 summary: clearSummary,
+                                hoveredGlobalTarget: hoveredGlobalTarget,
                                 onReplay: { startCountdown() },
                                 onOtherGame: {
                                     scene.stopGame()
-                                    camera.stopCamera()
+                                    if settings.devMode { camera.stopCamera() }
                                     screen = .select
                                 }
                             )
@@ -128,11 +150,12 @@ struct ContentView: View {
             }
 
             if showSettings {
-                SettingsModalView(settings: settings, onClose: { showSettings = false })
+                SettingsModalView(settings: settings, hoveredGlobalTarget: hoveredGlobalTarget, onClose: { showSettings = false })
             }
 
             if showPause {
                 PauseModalView(
+                    hoveredGlobalTarget: hoveredGlobalTarget,
                     onResume: {
                         showPause = false
                         scene.setPausedState(false)
@@ -142,23 +165,73 @@ struct ContentView: View {
                         showPause = false
                         SoundEngine.shared.setBgmAllowed(false)
                         scene.stopGame()
-                        camera.stopCamera()
+                        if settings.devMode { camera.stopCamera() }
                         screen = .select
                     }
                 )
             }
+
+            // Global Single-Hand Air Cursor Ring Overlay (Settings / Pause / Clear / Ready / Select Top Bar)
+            if shouldShowGlobalAirCursor {
+                ZStack {
+                    Circle()
+                        .fill(Color.green.opacity(0.22))
+                        .overlay(Circle().stroke(Color.white.opacity(0.88), lineWidth: 4))
+                        .frame(width: 64, height: 64)
+                    Circle()
+                        .trim(from: 0, to: globalDwell)
+                        .stroke(Color(red: 0.13, green: 1.0, blue: 0.53), style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 64, height: 64)
+                    Text("✋").font(.system(size: 24))
+                }
+                .shadow(color: .green.opacity(0.65), radius: 12)
+                .position(x: camera.airCursor.x * rootSize.width, y: camera.airCursor.y * rootSize.height)
+                .allowsHitTesting(false)
+                .zIndex(999)
+            }
+        }
+        .coordinateSpace(name: "appRoot")
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { rootSize = g.size }
+                .onChange(of: g.size) { _, s in rootSize = s }
+        })
+        .onPreferenceChange(HandTargetBoundsKey.self) { bounds in
+            handTargets = bounds
         }
         .onAppear {
             SoundEngine.shared.volume = Float(settings.volume)
             wireScene()
+            startGlobalAirCursorLoop()
+        }
+        .onDisappear {
+            globalAirTimer?.invalidate()
+            globalAirTimer = nil
         }
         // 화면이 인게임 밖으로 나가면 어떤 경로든 BGM·게임 타이머 즉시 완전 정지!
         .onChange(of: screen) { _, newScreen in
+            globalCooldown = 0.75
+            globalDwell = 0
+            hoveredGlobalTarget = nil
             let isPlaying = (newScreen == .inGame)
             SoundEngine.shared.setBgmAllowed(isPlaying)
             if !isPlaying && newScreen != .clear {
                 scene.stopGame()
             }
+        }
+        .onChange(of: showSettings) { _, _ in
+            globalCooldown = 0.75
+            globalDwell = 0
+            hoveredGlobalTarget = nil
+        }
+        .onChange(of: showPause) { _, _ in
+            globalCooldown = 0.75
+            globalDwell = 0
+            hoveredGlobalTarget = nil
+        }
+        .onChange(of: settings.players) { _, newPlayers in
+            camera.setExpectedPlayers(newPlayers)
         }
         // 앱이 백그라운드로 내려가거나 화면 꺼지면 BGM 즉시 일시정지
         .onChange(of: scenePhase) { _, phase in
@@ -167,6 +240,141 @@ struct ContentView: View {
             } else if screen == .inGame && !showPause {
                 SoundEngine.shared.resumeBgm()
             }
+        }
+    }
+
+    private var shouldShowGlobalAirCursor: Bool {
+        guard camera.airCursor.active, camera.isUsingCamera, !settings.devMode else { return false }
+        if showSettings || showPause || screen == .clear || screen == .ready { return true }
+        if screen == .select && hoveredGlobalTarget != nil { return true }
+        return false
+    }
+
+    private func startGlobalAirCursorLoop() {
+        globalAirTimer?.invalidate()
+        globalAirTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { _ in
+            if globalCooldown > 0 { globalCooldown = max(0, globalCooldown - 0.04) }
+            guard camera.airCursor.active, camera.isUsingCamera, !settings.devMode else {
+                globalDwell = 0
+                hoveredGlobalTarget = nil
+                return
+            }
+            let allowedPrefix: String?
+            if showSettings { allowedPrefix = "set_" }
+            else if showPause { allowedPrefix = "pause_" }
+            else if screen == .clear { allowedPrefix = "clear_" }
+            else if screen == .ready { allowedPrefix = "ready_" }
+            else if screen == .select { allowedPrefix = "select_" }
+            else { allowedPrefix = nil }
+
+            guard let prefix = allowedPrefix else {
+                globalDwell = 0
+                hoveredGlobalTarget = nil
+                return
+            }
+
+            let pt = CGPoint(x: camera.airCursor.x * rootSize.width, y: camera.airCursor.y * rootSize.height)
+            var hitId: String? = nil
+            var bestScore: CGFloat = .infinity
+            let pad: CGFloat = 14
+            for (id, rect) in handTargets where id.hasPrefix(prefix) {
+                guard rect.width >= 4 && rect.height >= 4 else { continue }
+                let insideExact = rect.contains(pt)
+                let insidePad = rect.insetBy(dx: -pad, dy: -pad).contains(pt)
+                guard insidePad else { continue }
+                let nearX = max(rect.minX, min(pt.x, rect.maxX))
+                let nearY = max(rect.minY, min(pt.y, rect.maxY))
+                let edgeDist = hypot(pt.x - nearX, pt.y - nearY)
+                let centerDist = hypot(pt.x - rect.midX, pt.y - rect.midY)
+                let stickyBonus: CGFloat = (id == hoveredGlobalTarget) ? -10 : 0
+                let score = (insideExact ? 0 : 1000) + edgeDist * 10 + centerDist * 0.08 + stickyBonus
+                if score < bestScore {
+                    bestScore = score
+                    hitId = id
+                }
+            }
+
+            if let id = hitId {
+                if hoveredGlobalTarget != id {
+                    hoveredGlobalTarget = id
+                    globalDwell = 0
+                }
+                if isAlreadyActiveGlobalTarget(id) {
+                    globalDwell = 0
+                } else if globalCooldown <= 0 {
+                    let prevHalf = globalDwell >= 0.5
+                    let dwellDur: CGFloat = id.hasPrefix("clear_") ? 1.2 : (id.hasPrefix("set_vol") ? 0.85 : 1.05)
+                    globalDwell = min(1.0, globalDwell + 0.04 / dwellDur)
+                    if !prevHalf && globalDwell >= 0.5 { SoundEngine.shared.playClick() }
+                    if globalDwell >= 1.0 {
+                        globalDwell = 0
+                        globalCooldown = 0.85
+                        hoveredGlobalTarget = nil
+                        SoundEngine.shared.playReadyOk()
+                        triggerGlobalHandAction(id)
+                    }
+                }
+            } else {
+                globalDwell = max(0, globalDwell - 0.08)
+                if globalDwell <= 0 { hoveredGlobalTarget = nil }
+            }
+        }
+    }
+
+    private func isAlreadyActiveGlobalTarget(_ id: String) -> Bool {
+        switch id {
+        case "select_1p", "set_1p": return settings.players == 1
+        case "select_2p", "set_2p": return settings.players == 2
+        case "set_slow": return settings.speedRaw == PlaySpeed.slow.rawValue
+        case "set_normal": return settings.speedRaw == PlaySpeed.normal.rawValue
+        case "set_fast": return settings.speedRaw == PlaySpeed.fast.rawValue
+        default: return false
+        }
+    }
+
+    private func triggerGlobalHandAction(_ id: String) {
+        switch id {
+        case "select_back":
+            camera.stopCamera()
+            screen = .home
+        case "select_1p": settings.players = 1
+        case "select_2p": settings.players = 2
+        case "select_settings": showSettings = true
+        case "set_close": showSettings = false
+        case "set_1p": settings.players = 1
+        case "set_2p": settings.players = 2
+        case "set_quiet": settings.quietMode.toggle()
+        case "set_slow": settings.speedRaw = PlaySpeed.slow.rawValue
+        case "set_normal": settings.speedRaw = PlaySpeed.normal.rawValue
+        case "set_fast": settings.speedRaw = PlaySpeed.fast.rawValue
+        case "set_vol_down":
+            settings.volume = max(0, settings.volume - 0.2)
+            SoundEngine.shared.volume = Float(settings.volume)
+        case "set_vol_up":
+            settings.volume = min(1, settings.volume + 0.2)
+            SoundEngine.shared.volume = Float(settings.volume)
+        case "set_dev": settings.devMode.toggle()
+        case "ready_back":
+            stopReadyLoop()
+            if settings.devMode { camera.stopCamera() }
+            screen = .select
+        case "ready_skip": startCountdown()
+        case "clear_replay": startCountdown()
+        case "clear_other":
+            scene.stopGame()
+            if settings.devMode { camera.stopCamera() }
+            screen = .select
+        case "pause_resume":
+            showPause = false
+            scene.setPausedState(false)
+            SoundEngine.shared.resumeBgm()
+        case "pause_quit":
+            showPause = false
+            SoundEngine.shared.setBgmAllowed(false)
+            scene.stopGame()
+            if settings.devMode { camera.stopCamera() }
+            screen = .select
+        default: break
         }
     }
 
@@ -217,8 +425,7 @@ struct ContentView: View {
             let count = settings.players
             var allReady = true
             for i in 0..<count {
-                if i < camera.players.count {
-                    let p = camera.players[i]
+                if let p = camera.players.first(where: { $0.id == i }) ?? (count == 1 ? camera.players.first : nil) {
                     readyHold[i] = min(1.5, readyHold[i] + (p.handsUp ? 0.11 : 0.035))
                 } else {
                     readyHold[i] = max(0, readyHold[i] - 0.05)
@@ -263,6 +470,55 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Reusable Web-Parity Stroked Jua Typography
+struct StrokedJuaText: View {
+    let text: String
+    let size: CGFloat
+    var fillColor: Color = Color(red: 1.0, green: 0.894, blue: 0.369)    // #FFE45E
+    var strokeColor: Color = Color(red: 0.851, green: 0.525, blue: 0.0)  // #D98600
+    var strokeWidth: CGFloat = 3.0
+    var shadowColor: Color = Color(red: 0.627, green: 0.345, blue: 0.0).opacity(0.55)
+    var shadowRadius: CGFloat = 10
+    var shadowY: CGFloat = 5
+
+    private static let outerDirections: [(CGFloat, CGFloat)] = (0..<16).map { i in
+        let angle = CGFloat(i) * (.pi * 2.0 / 16.0)
+        return (cos(angle), sin(angle))
+    }
+    private static let innerDirections: [(CGFloat, CGFloat)] = (0..<8).map { i in
+        let angle = CGFloat(i) * (.pi * 2.0 / 8.0)
+        return (cos(angle) * 0.55, sin(angle) * 0.55)
+    }
+
+    var body: some View {
+        ZStack {
+            ZStack {
+                ForEach(0..<Self.outerDirections.count, id: \.self) { idx in
+                    let dir = Self.outerDirections[idx]
+                    Text(text)
+                        .font(AppFont.swiftUIFont(size: size))
+                        .foregroundStyle(strokeColor)
+                        .offset(x: dir.0 * strokeWidth, y: dir.1 * strokeWidth)
+                }
+                ForEach(0..<Self.innerDirections.count, id: \.self) { idx in
+                    let dir = Self.innerDirections[idx]
+                    Text(text)
+                        .font(AppFont.swiftUIFont(size: size))
+                        .foregroundStyle(strokeColor)
+                        .offset(x: dir.0 * strokeWidth, y: dir.1 * strokeWidth)
+                }
+            }
+            .compositingGroup()
+            .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: shadowY)
+
+            Text(text)
+                .font(AppFont.swiftUIFont(size: size))
+                .foregroundStyle(fillColor)
+        }
+        .accessibilityLabel(text)
+    }
+}
+
 // MARK: - 3. Ready Check & 3-2-1 Countdown Overlay
 struct ReadyOverlayView: View {
     @ObservedObject var settings: AppSettings
@@ -270,21 +526,28 @@ struct ReadyOverlayView: View {
     let readyHold: [CGFloat]
     let isCountdown: Bool
     let countdownVal: Int
+    var hoveredGlobalTarget: String? = nil
     let onBack: () -> Void
     let onSkip: () -> Void
 
     var body: some View {
         ZStack {
-            // Live detected hand tracking rings during Ready Check (즉각적인 인식 피드백!)
+            // Live detected hand tracking rings during Ready Check (only genuinely tracked hands!)
             GeometryReader { geo in
                 ForEach(camera.players) { p in
                     let col = p.id == 0 ? Color(red: 0.36, green: 0.90, blue: 0.85) : Color(red: 1.0, green: 0.54, blue: 0.58)
-                    ForEach(Array([p.leftHand, p.rightHand].enumerated()), id: \.offset) { _, pt in
-                        Circle()
-                            .fill(col.opacity(0.28))
-                            .overlay(Circle().stroke(col, lineWidth: 3.5))
-                            .frame(width: 40, height: 40)
-                            .position(x: pt.x * geo.size.width, y: pt.y * geo.size.height)
+                    let handList: [(CGPoint, CGFloat)] = [
+                        (p.leftHand, p.metrics.lWristConf),
+                        (p.rightHand, p.metrics.rWristConf)
+                    ]
+                    ForEach(Array(handList.enumerated()), id: \.offset) { _, pair in
+                        if pair.1 >= 0.22 {
+                            Circle()
+                                .fill(col.opacity(0.28))
+                                .overlay(Circle().stroke(col, lineWidth: 3.5))
+                                .frame(width: 40, height: 40)
+                                .position(x: pair.0.x * geo.size.width, y: pair.0.y * geo.size.height)
+                        }
                     }
                 }
             }
@@ -306,8 +569,8 @@ struct ReadyOverlayView: View {
 
                         VStack {
                             Text(isOk ? "✓ P\(idx + 1) OK!" : (idx == 0 ? "P1 · 모모" : "P2 · 포포"))
-                                .font(.system(size: 14, weight: .heavy))
-                                .foregroundStyle(Color(red: 0.16, green: 0.20, blue: 0.27))
+                                .font(AppFont.swiftUIFont(size: 16))
+                                .foregroundStyle(Color(red: 0.153, green: 0.196, blue: 0.267))
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 6)
                                 .background(isOk ? col.opacity(0.35) : .white.opacity(0.92), in: Capsule())
@@ -333,6 +596,7 @@ struct ReadyOverlayView: View {
                             .frame(width: 40, height: 40)
                             .background(Color.black.opacity(0.55), in: Circle())
                     }
+                    .handTarget("ready_back", hovered: hoveredGlobalTarget)
                     HStack(spacing: 6) {
                         Circle().fill(.red).frame(width: 8, height: 8)
                         Text(camera.isUsingCamera ? "LIVE · \(settings.players)P" : "🛠️ DEV · \(settings.players)P")
@@ -347,23 +611,25 @@ struct ReadyOverlayView: View {
 
                     Button(action: { SoundEngine.shared.playClick(); onSkip() }) {
                         Text("바로 시작 ▶")
-                            .font(.system(size: 13, weight: .heavy))
-                            .foregroundStyle(Color(red: 0.16, green: 0.20, blue: 0.27))
-                            .padding(.horizontal, 14)
+                            .font(AppFont.swiftUIFont(size: 15))
+                            .foregroundStyle(Color(red: 0.153, green: 0.196, blue: 0.267))
+                            .padding(.horizontal, 16)
                             .padding(.vertical, 8)
                             .background(.white.opacity(0.95), in: Capsule())
+                            .shadow(color: .black.opacity(0.10), radius: 8, y: 3)
                     }
+                    .handTarget("ready_skip", hovered: hoveredGlobalTarget)
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, 10)
 
                 Text(isCountdown ? "준비 완료! 곧 시작해요!" : (settings.players == 2 ? "모모·포포 자리에 서서 만세! 해주세요" : "모모 자리에 서서 만세! 해주세요"))
-                    .font(.system(size: 17, weight: .heavy))
-                    .foregroundStyle(Color(red: 0.16, green: 0.20, blue: 0.27))
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 9)
-                    .background(.white.opacity(0.95), in: Capsule())
-                    .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
+                    .font(AppFont.swiftUIFont(size: 20))
+                    .foregroundStyle(Color(red: 0.153, green: 0.196, blue: 0.267))
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 10)
+                    .background(.white.opacity(0.96), in: Capsule())
+                    .shadow(color: Color(red: 0.10, green: 0.15, blue: 0.24).opacity(0.18), radius: 12, y: 5)
 
                 Spacer()
 
@@ -379,14 +645,39 @@ struct ReadyOverlayView: View {
             if isCountdown {
                 ZStack {
                     Circle()
-                        .fill(Color.yellow.opacity(0.2))
-                        .overlay(Circle().stroke(Color(red: 1.0, green: 0.83, blue: 0.23), lineWidth: 10))
-                        .frame(width: 120, height: 120)
-                        .shadow(color: .yellow.opacity(0.65), radius: 22)
-                    Text("\(countdownVal)")
-                        .font(.system(size: 66, weight: .black, design: .rounded))
-                        .foregroundStyle(Color(red: 1.0, green: 0.89, blue: 0.36))
-                        .shadow(color: .orange.opacity(0.7), radius: 6, y: 3)
+                        .fill(
+                            RadialGradient(
+                                colors: [
+                                    Color(red: 1.0, green: 0.91, blue: 0.47).opacity(0.26),
+                                    Color(red: 1.0, green: 0.77, blue: 0.0).opacity(0.08),
+                                ],
+                                center: .center,
+                                startRadius: 6,
+                                endRadius: 68
+                            )
+                        )
+                        .overlay(
+                            Circle()
+                                .stroke(Color(red: 1.0, green: 0.831, blue: 0.231), lineWidth: 10)
+                        )
+                        .overlay(
+                            Circle()
+                                .inset(by: 6)
+                                .stroke(Color.white.opacity(0.45), lineWidth: 2)
+                        )
+                        .frame(width: 136, height: 136)
+                        .shadow(color: Color(red: 1.0, green: 0.831, blue: 0.231).opacity(0.75), radius: 24)
+
+                    StrokedJuaText(
+                        text: "\(countdownVal)",
+                        size: 74,
+                        fillColor: Color(red: 1.0, green: 0.894, blue: 0.369),
+                        strokeColor: Color(red: 0.851, green: 0.525, blue: 0.0),
+                        strokeWidth: 3.2,
+                        shadowColor: Color(red: 0.627, green: 0.345, blue: 0.0).opacity(0.55),
+                        shadowRadius: 10,
+                        shadowY: 5
+                    )
                 }
             }
         }
@@ -395,6 +686,7 @@ struct ReadyOverlayView: View {
 
 // MARK: - 4. In-Game Minimal HUD
 struct InGameHUDView: View {
+    let gameType: GameType
     let score: Int
     let progressDone: Int
     let progressTotal: Int
@@ -420,44 +712,50 @@ struct InGameHUDView: View {
 
                 Spacer()
 
-                HStack(spacing: 8) {
-                    ForEach(0..<max(1, progressTotal), id: \.self) { i in
-                        Circle()
-                            .fill(i < progressDone ? Color.white : Color.white.opacity(0.36))
-                            .frame(width: 10, height: 10)
+                // Hide redundant top-center progress dots in games with dedicated visual progress UI (.animal & .jungle)
+                if gameType != .animal && gameType != .jungle {
+                    HStack(spacing: 8) {
+                        ForEach(0..<max(1, progressTotal), id: \.self) { i in
+                            Circle()
+                                .fill(i < progressDone ? Color.white : Color.white.opacity(0.36))
+                                .frame(width: 10, height: 10)
+                        }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.35), in: Capsule())
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.35), in: Capsule())
 
                 Spacer()
 
-                HStack(spacing: 6) {
+                HStack(spacing: 7) {
                     Image(systemName: "star.fill")
-                        .foregroundStyle(.yellow)
-                        .font(.system(size: 18))
+                        .foregroundStyle(Color(red: 1.0, green: 0.831, blue: 0.231))
+                        .font(.system(size: 19))
+                        .shadow(color: Color.orange.opacity(0.35), radius: 2, y: 1)
                     Text("\(score)")
-                        .font(.system(size: 22, weight: .black, design: .rounded))
-                        .foregroundStyle(Color(red: 0.42, green: 0.29, blue: 0.21))
+                        .font(AppFont.swiftUIFont(size: 25))
+                        .foregroundStyle(Color(red: 0.118, green: 0.227, blue: 0.373))
                 }
-                .padding(.horizontal, 18)
+                .padding(.horizontal, 20)
                 .padding(.vertical, 7)
-                .background(.white.opacity(0.95), in: Capsule())
-                .shadow(color: .black.opacity(0.14), radius: 8, y: 3)
+                .background(Color(red: 1.0, green: 0.992, blue: 0.961).opacity(0.96), in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.95), lineWidth: 2.5))
+                .shadow(color: Color(red: 0.06, green: 0.09, blue: 0.16).opacity(0.20), radius: 10, y: 4)
             }
             .padding(.horizontal, 18)
             .padding(.top, 10)
 
             if calloutVisible && !calloutText.isEmpty {
                 Text(calloutText)
-                    .font(.system(size: 18, weight: .heavy, design: .rounded))
+                    .font(AppFont.swiftUIFont(size: 21))
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 8)
-                    .background(Color(red: 1.0, green: 0.38, blue: 0.42).opacity(0.92), in: Capsule())
-                    .overlay(Capsule().stroke(.white.opacity(0.9), lineWidth: 2.5))
-                    .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
+                    .shadow(color: Color(red: 0.06, green: 0.09, blue: 0.16).opacity(0.28), radius: 3, y: 2)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 9)
+                    .background(Color(red: 1.0, green: 0.376, blue: 0.416).opacity(0.94), in: Capsule())
+                    .overlay(Capsule().stroke(.white.opacity(0.94), lineWidth: 3))
+                    .shadow(color: Color(red: 0.06, green: 0.09, blue: 0.16).opacity(0.24), radius: 12, y: 5)
                     .transition(.opacity)
             }
 
@@ -466,64 +764,134 @@ struct InGameHUDView: View {
     }
 }
 
-// MARK: - Clear & Pause Overlays
+// MARK: - Clear & Pause Overlays (Open Live-Camera Celebration + Hand & Touch Support!)
 struct ClearOverlayView: View {
     let summary: String
+    var hoveredGlobalTarget: String? = nil
     let onReplay: () -> Void
     let onOtherGame: () -> Void
 
+    @State private var appeared = false
+    @State private var starShow: [Bool] = [false, false, false]
+    @State private var mascotBounce = false
+
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.28).ignoresSafeArea()
-            VStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    BundleImage.swiftUIImage(named: "momo_head").resizable().scaledToFit().frame(width: 56)
-                    BundleImage.swiftUIImage(named: "popo_head").resizable().scaledToFit().frame(width: 56)
+        VStack {
+            // Top floating translucent victory ribbon (leaves center camera 100% open!)
+            VStack(spacing: 6) {
+                HStack(spacing: 10) {
+                    BundleImage.swiftUIImage(named: "momo_head").resizable().scaledToFit().frame(width: 54)
+                        .offset(y: mascotBounce ? -6 : 0)
+                    BundleImage.swiftUIImage(named: "popo_head").resizable().scaledToFit().frame(width: 54)
+                        .offset(y: mascotBounce ? 0 : -6)
                 }
-                .offset(y: -36)
-                .padding(.bottom, -36)
+                .offset(y: -30)
+                .padding(.bottom, -30)
+                .animation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true), value: mascotBounce)
 
                 HStack(spacing: 6) {
-                    ForEach(0..<3, id: \.self) { _ in
-                        Image(systemName: "star.fill").font(.system(size: 36)).foregroundStyle(.yellow)
+                    ForEach(0..<3, id: \.self) { idx in
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.yellow)
+                            .shadow(color: .orange.opacity(0.45), radius: 5, y: 2)
+                            .scaleEffect(starShow[idx] ? 1.0 : 0.15)
+                            .opacity(starShow[idx] ? 1.0 : 0.0)
+                            .animation(.spring(response: 0.42, dampingFraction: 0.58), value: starShow[idx])
                     }
                 }
                 Text("최고야! 짝짝짝!")
-                    .font(.system(size: 30, weight: .heavy, design: .rounded))
+                    .font(AppFont.swiftUIFont(size: 32))
+                    .foregroundStyle(Color(red: 0.153, green: 0.196, blue: 0.267))
                 Text(summary)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 14) {
-                    Button(action: { SoundEngine.shared.playClick(); onReplay() }) {
-                        Text("다시 하기")
-                            .font(.system(size: 18, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 28)
-                            .padding(.vertical, 12)
-                            .background(Color.orange, in: Capsule())
-                    }
-                    Button(action: { SoundEngine.shared.playClick(); onOtherGame() }) {
-                        Text("다른 놀이")
-                            .font(.system(size: 18, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 28)
-                            .padding(.vertical, 12)
-                            .background(Color(red: 0.25, green: 0.78, blue: 0.74), in: Capsule())
-                    }
-                }
-                .padding(.top, 6)
+                    .font(AppFont.swiftUIFont(size: 16))
+                    .foregroundStyle(Color(red: 0.392, green: 0.443, blue: 0.533))
             }
-            .padding(.horizontal, 36)
-            .padding(.vertical, 24)
-            .background(.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 32, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 32, style: .continuous).stroke(Color.yellow, lineWidth: 5))
-            .shadow(color: .black.opacity(0.2), radius: 22, y: 10)
+            .padding(.horizontal, 34)
+            .padding(.vertical, 14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+            .background(Color.white.opacity(0.76), in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(Color(red: 1.0, green: 0.839, blue: 0.267), lineWidth: 4))
+            .shadow(color: .black.opacity(0.18), radius: 20, y: 8)
+            .padding(.top, 26)
+            .scaleEffect(appeared ? 1.0 : 0.82)
+            .offset(y: appeared ? 0 : -26)
+            .opacity(appeared ? 1.0 : 0.0)
+            .animation(.spring(response: 0.55, dampingFraction: 0.72), value: appeared)
+
+            Spacer()
+
+            // Bottom floating action dock (hand hover 1.2s OR instant touch!)
+            HStack(spacing: 18) {
+                Button(action: { SoundEngine.shared.playClick(); onReplay() }) {
+                    Text("🔄 다시 하기")
+                        .font(AppFont.swiftUIFont(size: 22))
+                        .foregroundStyle(.white)
+                        .shadow(color: Color(red: 0.725, green: 0.431, blue: 0.0).opacity(0.35), radius: 2, y: 1)
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 13)
+                        .background(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 1.0, green: 0.886, blue: 0.290),
+                                    Color(red: 1.0, green: 0.761, blue: 0.039),
+                                    Color(red: 0.961, green: 0.686, blue: 0.0),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            in: Capsule()
+                        )
+                        .overlay(Capsule().stroke(.white.opacity(0.55), lineWidth: 2))
+                        .shadow(color: Color(red: 0.949, green: 0.678, blue: 0.0).opacity(0.42), radius: 10, y: 5)
+                }
+                .handTarget("clear_replay", hovered: hoveredGlobalTarget)
+
+                Button(action: { SoundEngine.shared.playClick(); onOtherGame() }) {
+                    Text("🎮 다른 놀이")
+                        .font(AppFont.swiftUIFont(size: 22))
+                        .foregroundStyle(.white)
+                        .shadow(color: Color(red: 0.10, green: 0.45, blue: 0.42).opacity(0.32), radius: 2, y: 1)
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 13)
+                        .background(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.455, green: 0.918, blue: 0.878),
+                                    Color(red: 0.247, green: 0.784, blue: 0.741),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            in: Capsule()
+                        )
+                        .overlay(Capsule().stroke(.white.opacity(0.65), lineWidth: 2.5))
+                        .shadow(color: Color(red: 0.247, green: 0.784, blue: 0.741).opacity(0.38), radius: 10, y: 5)
+                }
+                .handTarget("clear_other", hovered: hoveredGlobalTarget)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.bottom, 18)
+            .offset(y: appeared ? 0 : 40)
+            .opacity(appeared ? 1.0 : 0.0)
+            .animation(.spring(response: 0.55, dampingFraction: 0.75).delay(0.12), value: appeared)
+        }
+        .onAppear {
+            appeared = true
+            mascotBounce = true
+            for i in 0..<3 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.16 + Double(i) * 0.16) {
+                    starShow[i] = true
+                }
+            }
         }
     }
 }
 
 struct PauseModalView: View {
+    var hoveredGlobalTarget: String? = nil
     let onResume: () -> Void
     let onQuit: () -> Void
 
@@ -532,21 +900,52 @@ struct PauseModalView: View {
             Color.black.opacity(0.38).ignoresSafeArea()
             VStack(spacing: 14) {
                 Text("잠깐 쉬어가기")
-                    .font(.system(size: 24, weight: .heavy, design: .rounded))
+                    .font(AppFont.swiftUIFont(size: 28))
+                    .foregroundStyle(Color(red: 0.153, green: 0.196, blue: 0.267))
                 Button(action: { SoundEngine.shared.playClick(); onResume() }) {
                     Text("▶ 계속 놀기")
-                        .font(.system(size: 18, weight: .heavy))
+                        .font(AppFont.swiftUIFont(size: 21))
                         .foregroundStyle(.white)
-                        .frame(width: 210, height: 48)
-                        .background(Color.orange, in: Capsule())
+                        .shadow(color: Color(red: 0.725, green: 0.431, blue: 0.0).opacity(0.32), radius: 2, y: 1)
+                        .frame(width: 220, height: 50)
+                        .background(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 1.0, green: 0.886, blue: 0.290),
+                                    Color(red: 1.0, green: 0.761, blue: 0.039),
+                                    Color(red: 0.961, green: 0.686, blue: 0.0),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            in: Capsule()
+                        )
+                        .overlay(Capsule().stroke(.white.opacity(0.5), lineWidth: 2))
+                        .shadow(color: Color(red: 0.949, green: 0.678, blue: 0.0).opacity(0.36), radius: 10, y: 4)
                 }
+                .handTarget("pause_resume", hovered: hoveredGlobalTarget)
+
                 Button(action: { SoundEngine.shared.playClick(); onQuit() }) {
-                    Text("다른 놀이")
-                        .font(.system(size: 18, weight: .heavy))
+                    Text("🎮 다른 놀이")
+                        .font(AppFont.swiftUIFont(size: 21))
                         .foregroundStyle(.white)
-                        .frame(width: 210, height: 48)
-                        .background(Color(red: 0.25, green: 0.78, blue: 0.74), in: Capsule())
+                        .shadow(color: Color(red: 0.10, green: 0.45, blue: 0.42).opacity(0.30), radius: 2, y: 1)
+                        .frame(width: 220, height: 50)
+                        .background(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.455, green: 0.918, blue: 0.878),
+                                    Color(red: 0.247, green: 0.784, blue: 0.741),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            in: Capsule()
+                        )
+                        .overlay(Capsule().stroke(.white.opacity(0.65), lineWidth: 2.5))
+                        .shadow(color: Color(red: 0.247, green: 0.784, blue: 0.741).opacity(0.34), radius: 10, y: 4)
                 }
+                .handTarget("pause_quit", hovered: hoveredGlobalTarget)
             }
             .padding(28)
             .background(.white, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
