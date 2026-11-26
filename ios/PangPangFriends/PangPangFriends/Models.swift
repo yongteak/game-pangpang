@@ -190,18 +190,42 @@ struct PlayerPose: Identifiable {
     var metrics: FullBodyMetrics = FullBodyMetrics()
 }
 
-/// Bundle resource image loader (supports PNG & JPG in Resources/)
+/// Thread-safe cached bundle resource image loader (supports PNG & JPG in Resources/)
+/// Prevents repeated disk reads & PNG/JPEG decoding on every SwiftUI render pass!
 enum BundleImage {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 128
+        return c
+    }()
+    private static let lock = NSLock()
+
     static func uiImage(named name: String) -> UIImage? {
+        let key = name as NSString
+        lock.lock()
+        if let hit = cache.object(forKey: key) {
+            lock.unlock()
+            return hit
+        }
+        lock.unlock()
+
+        var loaded: UIImage? = nil
         if let path = Bundle.main.path(forResource: name, ofType: "png"),
            let img = UIImage(contentsOfFile: path) {
-            return img
+            loaded = img
+        } else if let path = Bundle.main.path(forResource: name, ofType: "jpg"),
+                  let img = UIImage(contentsOfFile: path) {
+            loaded = img
+        } else {
+            loaded = UIImage(named: name)
         }
-        if let path = Bundle.main.path(forResource: name, ofType: "jpg"),
-           let img = UIImage(contentsOfFile: path) {
-            return img
+
+        if let img = loaded {
+            lock.lock()
+            cache.setObject(img, forKey: key)
+            lock.unlock()
         }
-        return UIImage(named: name)
+        return loaded
     }
 
     static func swiftUIImage(named name: String) -> Image {
@@ -210,6 +234,26 @@ enum BundleImage {
         }
         return Image(systemName: "sparkles")
     }
+
+    /// Pre-decodes UI/menu & game images into GPU-ready bitmaps off the main thread so screens never hitch.
+    static func warmUpInBackground(_ names: [String]) {
+        DispatchQueue.global(qos: .utility).async {
+            for n in names {
+                let key = n as NSString
+                lock.lock()
+                let alreadyCached = (cache.object(forKey: key) != nil)
+                lock.unlock()
+                if alreadyCached { continue }
+
+                if let raw = uiImage(named: n),
+                   let decoded = raw.preparingForDisplay() {
+                    lock.lock()
+                    cache.setObject(decoded, forKey: key)
+                    lock.unlock()
+                }
+            }
+        }
+    }
 }
 
 /// Shared Korean game font (Google Fonts Jua, OFL) + sticker-style typography helper
@@ -217,25 +261,62 @@ enum AppFont {
     /// Exact PostScript font name verified from Jua-Regular.ttf (CoreText & TrueType nameID 6)
     static let juaPostScriptName: String = "Jua-Regular"
 
+    private static let cacheLock = NSLock()
+    private static var fontCache: [Int: UIFont] = [:]
+    private static let stickerCache: NSCache<NSString, NSAttributedString> = {
+        let c = NSCache<NSString, NSAttributedString>()
+        c.countLimit = 160
+        return c
+    }()
+
+    static func warmUpInBackground() {
+        DispatchQueue.global(qos: .utility).async {
+            _ = uiFont(size: 28)
+        }
+    }
+
     static func uiFont(size: CGFloat) -> UIFont {
+        let key = Int((size * 10).rounded())
+        cacheLock.lock()
+        if let hit = fontCache[key] {
+            cacheLock.unlock()
+            return hit
+        }
+        cacheLock.unlock()
+
+        let resolved: UIFont
         if let font = UIFont(name: juaPostScriptName, size: size) {
-            return font
+            resolved = font
+        } else if let font = UIFont(name: "Jua", size: size) {
+            resolved = font
+        } else {
+            let base = UIFont.systemFont(ofSize: size, weight: .heavy)
+            if let rounded = base.fontDescriptor.withDesign(.rounded) {
+                resolved = UIFont(descriptor: rounded, size: size)
+            } else {
+                resolved = base
+            }
         }
-        if let font = UIFont(name: "Jua", size: size) {
-            return font
-        }
-        let base = UIFont.systemFont(ofSize: size, weight: .heavy)
-        if let rounded = base.fontDescriptor.withDesign(.rounded) {
-            return UIFont(descriptor: rounded, size: size)
-        }
-        return base
+
+        cacheLock.lock()
+        fontCache[key] = resolved
+        cacheLock.unlock()
+        return resolved
     }
 
     static func swiftUIFont(size: CGFloat) -> Font {
         Font.custom(juaPostScriptName, size: size)
     }
 
-    /// PixiJS-parity sticker text for SpriteKit SKLabelNode.attributedText:
+    private static func rgbaKey(_ color: UIColor) -> String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        if color.getRed(&r, green: &g, blue: &b, alpha: &a) {
+            return "\(Int((r * 255).rounded())),\(Int((g * 255).rounded())),\(Int((b * 255).rounded())),\(Int((a * 255).rounded()))"
+        }
+        return color.description
+    }
+
+    /// PixiJS-parity sticker text for SpriteKit SKLabelNode.attributedText (cached to avoid CoreText allocs at 60fps):
     /// Jua font + fill color + thick colored outline (negative strokeWidth renders both fill & stroke)
     /// + soft drop shadow + centered paragraph alignment.
     static func stickerAttributedText(
@@ -246,6 +327,14 @@ enum AppFont {
         fillColor: UIColor = .white,
         shadowAlpha: CGFloat = 0.28
     ) -> NSAttributedString {
+        let key = "\(text)|\(Int((fontSize * 10).rounded()))|\(Int((strokeWidth * 10).rounded()))|\(rgbaKey(strokeColor))|\(rgbaKey(fillColor))|\(Int((shadowAlpha * 100).rounded()))" as NSString
+        cacheLock.lock()
+        if let hit = stickerCache.object(forKey: key) {
+            cacheLock.unlock()
+            return hit
+        }
+        cacheLock.unlock()
+
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineBreakMode = .byWordWrapping
@@ -266,6 +355,10 @@ enum AppFont {
             attributes[.shadow] = shadow
         }
 
-        return NSAttributedString(string: text, attributes: attributes)
+        let built = NSAttributedString(string: text, attributes: attributes)
+        cacheLock.lock()
+        stickerCache.setObject(built, forKey: key)
+        cacheLock.unlock()
+        return built
     }
 }

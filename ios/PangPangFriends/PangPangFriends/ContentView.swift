@@ -22,6 +22,7 @@ struct ContentView: View {
     // Ready & Countdown state
     @State private var readyHold: [CGFloat] = [0, 0]
     @State private var countdownVal = 3
+    @State private var countdownToken = 0
     @State private var readyTimer: Timer?
 
     // In-Game HUD state
@@ -42,6 +43,18 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
+            // Single persistent live camera backdrop shared across Select -> Ready -> Countdown -> InGame -> Clear!
+            // Eliminates AVCaptureVideoPreviewLayer teardown/recreation & RotationCoordinator main-thread stalls!
+            if screen != .home {
+                if camera.isUsingCamera && !settings.devMode {
+                    CameraPreviewView(manager: camera)
+                        .ignoresSafeArea()
+                } else if screen != .select {
+                    Color(red: 0.97, green: 0.98, blue: 0.99)
+                        .ignoresSafeArea()
+                }
+            }
+
             if screen == .home {
                 HomeScreenView(
                     settings: settings,
@@ -70,17 +83,9 @@ struct ContentView: View {
                     onOpenSettings: { showSettings = true }
                 )
             } else {
-                // Camera / Minimal Dev Backdrop + SpriteKit + AR/HUD Overlays
+                // SpriteKit + AR/HUD Overlays over the persistent CameraPreviewView
                 GeometryReader { geo in
                     ZStack {
-                        if camera.isUsingCamera {
-                            CameraPreviewView(manager: camera)
-                                .ignoresSafeArea()
-                        } else {
-                            Color(red: 0.97, green: 0.98, blue: 0.99)
-                                .ignoresSafeArea()
-                        }
-
                         if screen == .inGame || screen == .clear {
                             SpriteView(scene: scene, options: [.allowsTransparency])
                                 .ignoresSafeArea()
@@ -198,12 +203,21 @@ struct ContentView: View {
                 .onChange(of: g.size) { _, s in rootSize = s }
         })
         .onPreferenceChange(HandTargetBoundsKey.self) { bounds in
-            handTargets = bounds
+            if bounds != handTargets {
+                handTargets = bounds
+            }
         }
         .onAppear {
+            AppFont.warmUpInBackground()
+            BundleImage.warmUpInBackground([
+                "logo_pangpang", "momo", "popo", "momo_head", "popo_head",
+                "card_fruit", "card_balloon", "card_freeze", "card_animal",
+                "card_jungle", "card_mole", "card_balance"
+            ])
             SoundEngine.shared.volume = Float(settings.volume)
             wireScene()
-            startGlobalAirCursorLoop()
+            syncCameraPublishMode()
+            syncGlobalAirCursorLoop()
         }
         .onDisappear {
             globalAirTimer?.invalidate()
@@ -212,8 +226,10 @@ struct ContentView: View {
         // 화면이 인게임 밖으로 나가면 어떤 경로든 BGM·게임 타이머 즉시 완전 정지!
         .onChange(of: screen) { _, newScreen in
             globalCooldown = 0.75
-            globalDwell = 0
-            hoveredGlobalTarget = nil
+            if globalDwell != 0 { globalDwell = 0 }
+            if hoveredGlobalTarget != nil { hoveredGlobalTarget = nil }
+            syncCameraPublishMode()
+            syncGlobalAirCursorLoop()
             let isPlaying = (newScreen == .inGame)
             SoundEngine.shared.setBgmAllowed(isPlaying)
             if !isPlaying && newScreen != .clear {
@@ -222,13 +238,17 @@ struct ContentView: View {
         }
         .onChange(of: showSettings) { _, _ in
             globalCooldown = 0.75
-            globalDwell = 0
-            hoveredGlobalTarget = nil
+            if globalDwell != 0 { globalDwell = 0 }
+            if hoveredGlobalTarget != nil { hoveredGlobalTarget = nil }
+            syncCameraPublishMode()
+            syncGlobalAirCursorLoop()
         }
         .onChange(of: showPause) { _, _ in
             globalCooldown = 0.75
-            globalDwell = 0
-            hoveredGlobalTarget = nil
+            if globalDwell != 0 { globalDwell = 0 }
+            if hoveredGlobalTarget != nil { hoveredGlobalTarget = nil }
+            syncCameraPublishMode()
+            syncGlobalAirCursorLoop()
         }
         .onChange(of: settings.players) { _, newPlayers in
             camera.setExpectedPlayers(newPlayers)
@@ -250,13 +270,30 @@ struct ContentView: View {
         return false
     }
 
+    private var needsGlobalAirTimer: Bool {
+        showSettings || showPause || screen == .select || screen == .ready || screen == .clear
+    }
+
+    private func syncGlobalAirCursorLoop() {
+        if needsGlobalAirTimer {
+            if globalAirTimer == nil {
+                startGlobalAirCursorLoop()
+            }
+        } else {
+            globalAirTimer?.invalidate()
+            globalAirTimer = nil
+            if globalDwell != 0 { globalDwell = 0 }
+            if hoveredGlobalTarget != nil { hoveredGlobalTarget = nil }
+        }
+    }
+
     private func startGlobalAirCursorLoop() {
         globalAirTimer?.invalidate()
         globalAirTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { _ in
             if globalCooldown > 0 { globalCooldown = max(0, globalCooldown - 0.04) }
             guard camera.airCursor.active, camera.isUsingCamera, !settings.devMode else {
-                globalDwell = 0
-                hoveredGlobalTarget = nil
+                if globalDwell != 0 { globalDwell = 0 }
+                if hoveredGlobalTarget != nil { hoveredGlobalTarget = nil }
                 return
             }
             let allowedPrefix: String?
@@ -268,8 +305,8 @@ struct ContentView: View {
             else { allowedPrefix = nil }
 
             guard let prefix = allowedPrefix else {
-                globalDwell = 0
-                hoveredGlobalTarget = nil
+                if globalDwell != 0 { globalDwell = 0 }
+                if hoveredGlobalTarget != nil { hoveredGlobalTarget = nil }
                 return
             }
 
@@ -300,7 +337,7 @@ struct ContentView: View {
                     globalDwell = 0
                 }
                 if isAlreadyActiveGlobalTarget(id) {
-                    globalDwell = 0
+                    if globalDwell != 0 { globalDwell = 0 }
                 } else if globalCooldown <= 0 {
                     let prevHalf = globalDwell >= 0.5
                     let dwellDur: CGFloat = id.hasPrefix("clear_") ? 1.2 : (id.hasPrefix("set_vol") ? 0.85 : 1.05)
@@ -315,8 +352,12 @@ struct ContentView: View {
                     }
                 }
             } else {
-                globalDwell = max(0, globalDwell - 0.08)
-                if globalDwell <= 0 { hoveredGlobalTarget = nil }
+                if globalDwell > 0 {
+                    globalDwell = max(0, globalDwell - 0.08)
+                }
+                if globalDwell <= 0 && hoveredGlobalTarget != nil {
+                    hoveredGlobalTarget = nil
+                }
             }
         }
     }
@@ -380,11 +421,15 @@ struct ContentView: View {
 
     private func wireScene() {
         scene.cameraManager = camera
-        scene.onScore = { val in DispatchQueue.main.async { score = val } }
+        scene.onScore = { val in
+            DispatchQueue.main.async {
+                if score != val { score = val }
+            }
+        }
         scene.onProgress = { done, total in
             DispatchQueue.main.async {
-                progressDone = done
-                progressTotal = total
+                if progressDone != done { progressDone = done }
+                if progressTotal != total { progressTotal = total }
             }
         }
         scene.onCallout = { text, duration in
@@ -413,19 +458,41 @@ struct ContentView: View {
         }
     }
 
+    private func syncCameraPublishMode() {
+        if showSettings || showPause {
+            camera.setUIPublishMode(.cursorOnly)
+        } else if screen == .inGame {
+            // Zero SwiftUI re-renders during gameplay — GameScene reads lock-protected snapshotPlayers() directly at 60fps!
+            camera.setUIPublishMode(.none)
+        } else if screen == .ready || screen == .countdown {
+            camera.setUIPublishMode(.readyAndCursor)
+        } else if screen == .select || screen == .clear {
+            camera.setUIPublishMode(.cursorOnly)
+        } else {
+            camera.setUIPublishMode(.none)
+        }
+    }
+
     private func enterReadyScreen() {
         readyHold = [0, 0]
         screen = .ready
-        camera.start(expectedPlayers: settings.players, devMode: settings.devMode)
+        // Pre-decode ONLY the selected game's assets off the main thread during Ready/Countdown (0ms launch!)
+        scene.warmUpAssetsInBackground(for: selectedGame)
+        if settings.devMode || !camera.isUsingCamera {
+            camera.start(expectedPlayers: settings.players, devMode: settings.devMode)
+        } else {
+            camera.setExpectedPlayers(settings.players)
+        }
 
         stopReadyLoop()
         readyTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
             guard screen == .ready else { return }
             camera.tickDevMode()
             let count = settings.players
+            let activePlayers = camera.snapshotPlayers()
             var allReady = true
             for i in 0..<count {
-                if let p = camera.players.first(where: { $0.id == i }) ?? (count == 1 ? camera.players.first : nil) {
+                if let p = activePlayers.first(where: { $0.id == i }) ?? (count == 1 ? activePlayers.first : nil) {
                     readyHold[i] = min(1.5, readyHold[i] + (p.handsUp ? 0.11 : 0.035))
                 } else {
                     readyHold[i] = max(0, readyHold[i] - 0.05)
@@ -446,22 +513,24 @@ struct ContentView: View {
 
     private func startCountdown() {
         stopReadyLoop()
+        countdownToken += 1
+        let token = countdownToken
         screen = .countdown
         countdownVal = 3
         SoundEngine.shared.playCountdown(3)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
-            guard screen == .countdown else { return }
+            guard screen == .countdown, countdownToken == token else { return }
             countdownVal = 2
             SoundEngine.shared.playCountdown(2)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.70) {
-            guard screen == .countdown else { return }
+            guard screen == .countdown, countdownToken == token else { return }
             countdownVal = 1
             SoundEngine.shared.playCountdown(1)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.55) {
-            guard screen == .countdown else { return }
+            guard screen == .countdown, countdownToken == token else { return }
             SoundEngine.shared.playCountdown(0)
             SoundEngine.shared.setBgmAllowed(true)
             screen = .inGame
@@ -481,27 +550,16 @@ struct StrokedJuaText: View {
     var shadowRadius: CGFloat = 10
     var shadowY: CGFloat = 5
 
-    private static let outerDirections: [(CGFloat, CGFloat)] = (0..<16).map { i in
-        let angle = CGFloat(i) * (.pi * 2.0 / 16.0)
-        return (cos(angle), sin(angle))
-    }
-    private static let innerDirections: [(CGFloat, CGFloat)] = (0..<8).map { i in
+    private static let strokeDirections: [(CGFloat, CGFloat)] = (0..<8).map { i in
         let angle = CGFloat(i) * (.pi * 2.0 / 8.0)
-        return (cos(angle) * 0.55, sin(angle) * 0.55)
+        return (cos(angle), sin(angle))
     }
 
     var body: some View {
         ZStack {
             ZStack {
-                ForEach(0..<Self.outerDirections.count, id: \.self) { idx in
-                    let dir = Self.outerDirections[idx]
-                    Text(text)
-                        .font(AppFont.swiftUIFont(size: size))
-                        .foregroundStyle(strokeColor)
-                        .offset(x: dir.0 * strokeWidth, y: dir.1 * strokeWidth)
-                }
-                ForEach(0..<Self.innerDirections.count, id: \.self) { idx in
-                    let dir = Self.innerDirections[idx]
+                ForEach(0..<Self.strokeDirections.count, id: \.self) { idx in
+                    let dir = Self.strokeDirections[idx]
                     Text(text)
                         .font(AppFont.swiftUIFont(size: size))
                         .foregroundStyle(strokeColor)

@@ -325,9 +325,7 @@ struct StageSelectView: View {
         GeometryReader { geo in
             ZStack(alignment: .bottomTrailing) {
                 if camera.isUsingCamera && !settings.devMode {
-                    CameraPreviewView(manager: camera)
-                        .ignoresSafeArea()
-                    // Light tint opacity 0.22 so the child clearly sees themselves behind floating cards!
+                    // Persistent CameraPreviewView is mounted in ContentView root so screen transitions never stutter!
                     Color(red: 0.06, green: 0.10, blue: 0.18)
                         .opacity(0.22)
                         .ignoresSafeArea()
@@ -557,14 +555,16 @@ struct StageSelectView: View {
             }
             .coordinateSpace(name: "selectRoot")
             .onPreferenceChange(SelectTargetBoundsKey.self) { bounds in
-                selectBounds = bounds
+                if bounds != selectBounds {
+                    selectBounds = bounds
+                }
             }
             .onAppear {
                 floatCard = true
                 selectSize = geo.size
                 entryCooldown = 0.75
                 camera.updateViewSize(geo.size)
-                if !settings.devMode {
+                if !settings.devMode && !camera.isUsingCamera {
                     camera.start(expectedPlayers: settings.players, devMode: false)
                 }
                 startAirCursorLoop()
@@ -679,11 +679,11 @@ struct StageSelectView: View {
             if entryCooldown > 0 { entryCooldown = max(0, entryCooldown - 0.04) }
 
             guard camera.airCursor.active, camera.isUsingCamera, !settings.devMode, !modalActive, hoveredGlobalTarget == nil else {
-                dwellProgress = max(0, dwellProgress - 0.08)
+                if dwellProgress > 0 { dwellProgress = max(0, dwellProgress - 0.08) }
                 if dwellProgress <= 0 {
-                    hoveredGame = nil
-                    hoveredArrow = 0
-                    dwellTickStep = 0
+                    if hoveredGame != nil { hoveredGame = nil }
+                    if hoveredArrow != 0 { hoveredArrow = 0 }
+                    if dwellTickStep != 0 { dwellTickStep = 0 }
                 }
                 return
             }
@@ -717,7 +717,7 @@ struct StageSelectView: View {
             }
 
             // 2) Check exact visible card rects (nearest match, 1.5s dwell!)
-            hoveredArrow = 0
+            if hoveredArrow != 0 { hoveredArrow = 0 }
             let vis = visibleGames
             let cardIds = vis.map { "card_\($0.rawValue)" }
             let curCardId = hoveredGame.map { "card_\($0.rawValue)" }
@@ -746,10 +746,10 @@ struct StageSelectView: View {
                     }
                 }
             } else {
-                dwellProgress = max(0, dwellProgress - 0.07)
+                if dwellProgress > 0 { dwellProgress = max(0, dwellProgress - 0.07) }
                 if dwellProgress <= 0 {
-                    hoveredGame = nil
-                    dwellTickStep = 0
+                    if hoveredGame != nil { hoveredGame = nil }
+                    if dwellTickStep != 0 { dwellTickStep = 0 }
                 }
             }
         }

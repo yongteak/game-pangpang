@@ -51,7 +51,7 @@ final class KidsGameScene: SKScene {
         let color: UIColor
         let offsetY: CGFloat
         let baseWidth: CGFloat
-        let segments: [SKShapeNode]
+        let segments: [SKSpriteNode]
     }
     private struct HandTrailRig {
         let container: SKNode
@@ -61,9 +61,26 @@ final class KidsGameScene: SKScene {
     private var haloRigs: [HandHaloRig] = []
     private var trailRigs: [HandTrailRig] = []
 
-    // Parabolic VFX Physics Pools (60fps Metal, zero leaks)
+    // Callback deduplication & static CGPath / HUD update caches (prevents 60fps main-thread & tessellation spam)
+    private var lastReportedScore = -1
+    private var lastReportedProgressDone = -1
+    private var lastReportedProgressTotal = -1
+    private var lastFeverBorderSize: CGSize = .zero
+    private var lastClubBorderSize: CGSize = .zero
+    private var lastDiscoStringSize: CGSize = .zero
+    private var lastFreezeProgStep = -1
+    private var lastFreezeDangerStep = -1
+    private var lastAnimalPieStep = -1
+    private var lastAnimalHoldStep = -1
+    private var lastAnimalBadgeIndex = -1
+    private var lastAnimalBadgeSize: CGSize = .zero
+    private var lastJungleFillStep = -1
+    private var lastJungleTrackSize: CGSize = .zero
+    private var lastOneLegRingStep = -1
+
+    // Parabolic VFX Physics Pools (60fps Metal batched SKSpriteNodes, zero per-frame SKShapeNode tessellation!)
     private struct BurstParticle {
-        let node: SKShapeNode
+        let node: SKSpriteNode
         var vx: CGFloat
         var vy: CGFloat
         let vrot: CGFloat
@@ -73,7 +90,7 @@ final class KidsGameScene: SKScene {
         let isStar: Bool
     }
     private struct ActiveBubble {
-        let node: SKShapeNode
+        let node: SKSpriteNode
         var vx: CGFloat
         var vy: CGFloat
         let seed: CGFloat
@@ -90,8 +107,62 @@ final class KidsGameScene: SKScene {
     private var burstParticles: [BurstParticle] = []
     private var activeBubbles: [ActiveBubble] = []
     private var slicedHalves: [SlicedHalf] = []
-    private lazy var unitStarPath: CGPath = makeStarPath(outerR: 14.5, innerR: 6.0)
-    private lazy var unitDropletPath: CGPath = CGPath(ellipseIn: CGRect(x: -10, y: -10, width: 20, height: 20), transform: nil)
+
+    // Pre-baked tiny shared GPU particle textures (rendered ONCE, hardware-batched in Metal!)
+    private lazy var trailCapsuleTex: SKTexture = {
+        let sz = CGSize(width: 48, height: 24)
+        let img = UIGraphicsImageRenderer(size: sz).image { ctx in
+            let rect = CGRect(origin: .zero, size: sz)
+            UIColor.white.setFill()
+            UIBezierPath(roundedRect: rect, cornerRadius: sz.height * 0.5).fill()
+        }
+        return SKTexture(image: img)
+    }()
+    private lazy var starParticleTex: SKTexture = {
+        let sz = CGSize(width: 32, height: 32)
+        let starPath = makeStarPath(outerR: 14.5, innerR: 6.0)
+        let img = UIGraphicsImageRenderer(size: sz).image { ctx in
+            let cg = ctx.cgContext
+            cg.translateBy(x: 16, y: 16)
+            cg.addPath(starPath)
+            cg.setFillColor(UIColor.white.cgColor)
+            cg.fillPath()
+        }
+        return SKTexture(image: img)
+    }()
+    private lazy var dropletParticleTex: SKTexture = {
+        let sz = CGSize(width: 24, height: 24)
+        let img = UIGraphicsImageRenderer(size: sz).image { _ in
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: CGRect(x: 2, y: 2, width: 20, height: 20)).fill()
+        }
+        return SKTexture(image: img)
+    }()
+    private lazy var confettiTex: SKTexture = {
+        let sz = CGSize(width: 16, height: 12)
+        let img = UIGraphicsImageRenderer(size: sz).image { _ in
+            UIColor.white.setFill()
+            UIBezierPath(roundedRect: CGRect(x: 1, y: 1, width: 14, height: 10), cornerRadius: 2.5).fill()
+        }
+        return SKTexture(image: img)
+    }()
+    private lazy var soapBubbleTex: SKTexture = {
+        let sz = CGSize(width: 48, height: 48)
+        let img = UIGraphicsImageRenderer(size: sz).image { _ in
+            let bubbleRect = CGRect(x: 4, y: 4, width: 40, height: 40)
+            UIColor.white.withAlphaComponent(0.32).setFill()
+            UIBezierPath(ovalIn: bubbleRect).fill()
+
+            let rim = UIBezierPath(ovalIn: bubbleRect)
+            rim.lineWidth = 2.4
+            UIColor.white.withAlphaComponent(0.88).setStroke()
+            rim.stroke()
+
+            UIColor.white.withAlphaComponent(0.92).setFill()
+            UIBezierPath(ovalIn: CGRect(x: 12.5, y: 12.5, width: 9.5, height: 9.5)).fill()
+        }
+        return SKTexture(image: img)
+    }()
 
     // 90s Zen Fruit state
     private let zenDuration: CGFloat = 90.0
@@ -264,7 +335,7 @@ final class KidsGameScene: SKScene {
     }
 
     // Reusable Creamy Circular Posture/Move Badge (Game 4 & Game 5)
-    private struct CircularMoveBadge {
+    private final class CircularMoveBadge {
         let container: SKNode
         let glowCircle: SKShapeNode
         let bgCircle: SKShapeNode
@@ -275,6 +346,35 @@ final class KidsGameScene: SKScene {
         let labelBg: SKShapeNode
         let label: SKLabelNode
         let radius: CGFloat
+        var lastIconId: String?
+        var lastProgressStep: Int = -1
+        var lastActive: Bool?
+
+        init(
+            container: SKNode,
+            glowCircle: SKShapeNode,
+            bgCircle: SKShapeNode,
+            trackRing: SKShapeNode,
+            progressRing: SKShapeNode,
+            iconSprite: SKSpriteNode,
+            iconNode: SKShapeNode,
+            labelBg: SKShapeNode,
+            label: SKLabelNode,
+            radius: CGFloat,
+            lastIconId: String? = nil
+        ) {
+            self.container = container
+            self.glowCircle = glowCircle
+            self.bgCircle = bgCircle
+            self.trackRing = trackRing
+            self.progressRing = progressRing
+            self.iconSprite = iconSprite
+            self.iconNode = iconNode
+            self.labelBg = labelBg
+            self.label = label
+            self.radius = radius
+            self.lastIconId = lastIconId
+        }
     }
 
     // Game 5: Jungle Adventure (60s, 3 Full-Body Phases: Run / Squat / Jump)
@@ -448,15 +548,13 @@ final class KidsGameScene: SKScene {
                 let trailContainer = SKNode()
                 trailLayer.addChild(trailContainer)
                 var bands: [TrailBand] = []
+                let capTex = trailCapsuleTex
                 for (bCol, bOffset, bWidth) in bandSpecs {
-                    var segs: [SKShapeNode] = []
+                    var segs: [SKSpriteNode] = []
                     segs.reserveCapacity(maxTrailPoints - 1)
                     for _ in 0..<(maxTrailPoints - 1) {
-                        let seg = SKShapeNode()
-                        seg.strokeColor = bCol
-                        seg.fillColor = .clear
-                        seg.lineCap = .round
-                        seg.lineJoin = .round
+                        let seg = SKSpriteNode(texture: capTex, color: bCol, size: CGSize(width: 48, height: 24))
+                        seg.colorBlendFactor = 1.0
                         seg.blendMode = .add
                         seg.isHidden = true
                         seg.alpha = 0
@@ -468,35 +566,64 @@ final class KidsGameScene: SKScene {
                 trailRigs.append(HandTrailRig(container: trailContainer, bands: bands))
             }
         }
-        preloadTextures()
+        preloadTextures(for: gameType)
     }
 
-    private func preloadTextures() {
-        let baseFruits = [
-            "fruit_strawberry", "fruit_apple", "fruit_orange", "fruit_banana",
-            "fruit_grape", "fruit_peach", "fruit_pineapple", "fruit_melon", "watermelon"
-        ]
-        var names = [
-            "balloon_red", "balloon_beach", "balloon_gold", "dino_sprite",
-            "dino_dance1", "dino_dance2", "dino_freeze",
-            "momo_dance1", "momo_dance2", "momo_freeze",
-            "popo_dance1", "popo_dance2", "popo_freeze",
-            "animal_giraffe", "animal_eagle", "animal_crab",
-            "animal_flamingo", "animal_frog", "animal_elephant", "animal_starfish",
-            "pose_giraffe", "pose_eagle", "pose_crab",
-            "pose_flamingo", "pose_frog", "pose_elephant", "pose_starfish",
-            "pose_run", "pose_squat", "pose_jump",
-            "jungle_vine", "momo_squat", "star_3d",
-            "mole_cute", "mole_gold", "log_bridge", "momo", "popo"
-        ]
-        for k in baseFruits {
-            names.append(contentsOf: [k, "\(k)_left", "\(k)_right"])
+    private func textureNames(for type: GameType) -> [String] {
+        switch type {
+        case .fruit:
+            let baseFruits = [
+                "fruit_strawberry", "fruit_apple", "fruit_orange", "fruit_banana",
+                "fruit_grape", "fruit_peach", "fruit_pineapple", "fruit_melon", "watermelon"
+            ]
+            return baseFruits.flatMap { [$0, "\($0)_left", "\($0)_right"] }
+        case .balloon:
+            return ["balloon_red", "balloon_beach", "balloon_gold"]
+        case .freeze:
+            return [
+                "dino_sprite", "dino_dance1", "dino_dance2", "dino_freeze",
+                "momo_dance1", "momo_dance2", "momo_freeze",
+                "popo_dance1", "popo_dance2", "popo_freeze"
+            ]
+        case .animal:
+            return [
+                "animal_giraffe", "animal_eagle", "animal_crab",
+                "animal_flamingo", "animal_frog", "animal_elephant", "animal_starfish",
+                "pose_giraffe", "pose_eagle", "pose_crab",
+                "pose_flamingo", "pose_frog", "pose_elephant", "pose_starfish"
+            ]
+        case .jungle:
+            return [
+                "jungle_vine", "momo_squat", "star_3d", "momo", "momo_head",
+                "momo_dance1", "momo_dance2",
+                "pose_run", "pose_squat", "pose_jump"
+            ]
+        case .mole:
+            return ["mole_cute", "mole_gold"]
+        case .balance:
+            return [
+                "log_bridge", "star_3d", "momo", "popo",
+                "momo_dance1", "momo_freeze", "popo_dance1", "popo_freeze",
+                "pose_flamingo"
+            ]
         }
+    }
+
+    /// Loads ONLY the active game's textures on-demand (already cached in BundleImage -> <15ms!),
+    /// avoiding the 4-second main-thread freeze from decoding all 64 PNGs at once!
+    private func preloadTextures(for type: GameType) {
+        let names = textureNames(for: type)
         for n in names where textures[n] == nil {
             if let ui = BundleImage.uiImage(named: n) {
                 textures[n] = SKTexture(image: ui)
             }
         }
+    }
+
+    /// Pre-decodes a game's PNGs into BundleImage cache off the main thread during Ready/Countdown
+    /// so entering the game has 0ms disk/decode latency!
+    func warmUpAssetsInBackground(for type: GameType) {
+        BundleImage.warmUpInBackground(textureNames(for: type))
     }
 
     func setPausedState(_ paused: Bool) {
@@ -509,7 +636,7 @@ final class KidsGameScene: SKScene {
         finishWorkItem = nil
         self.gameType = type
         self.settings = settings
-        preloadTextures()
+        preloadTextures(for: type)
 
         gameLayer.removeAllChildren()
         splatLayer.removeAllChildren()
@@ -609,12 +736,26 @@ final class KidsGameScene: SKScene {
         screenShake = 0
         emaMotion = 0
         feverActive = false
+        lastReportedScore = -1
+        lastReportedProgressDone = -1
+        lastReportedProgressTotal = -1
+        lastClubBorderSize = .zero
+        lastDiscoStringSize = .zero
+        lastFreezeProgStep = -1
+        lastFreezeDangerStep = -1
+        lastAnimalPieStep = -1
+        lastAnimalHoldStep = -1
+        lastAnimalBadgeIndex = -1
+        lastAnimalBadgeSize = .zero
+        lastJungleFillStep = -1
+        lastJungleTrackSize = .zero
+        lastOneLegRingStep = -1
         prevHands = [nil, nil, nil, nil]
         handEnergy = [0, 0, 0, 0]
         handTrails = [[], [], [], []]
         for s in 0..<4 { hideHandVfx(slot: s) }
 
-        onScore?(0)
+        reportScore(0)
 
         switch type {
         case .fruit:
@@ -624,7 +765,7 @@ final class KidsGameScene: SKScene {
             bossIndex = 0
             bossHits = 0
             bossCooldown = 0
-            onProgress?(0, 9)
+            reportProgress(0, 9)
             onCallout?("90초 과일 팡팡! 사방에서 날아와요!", 2.6)
             SoundEngine.shared.startBgm(track: "bgm_fruit", rate: 1.0)
 
@@ -633,7 +774,7 @@ final class KidsGameScene: SKScene {
             goldBallSpawned = false
             nextBalloonMilestone = 50
             spawnBalloon(kind: "balloon_red", atX: 0.5, golden: false, points: 1)
-            onProgress?(0, 10)
+            reportProgress(0, 10)
             onCallout?("풍선을 200점까지 신나게 띄워요!", 2.8)
             SoundEngine.shared.startBgm(track: "bgm_balloon", rate: 1.0)
 
@@ -650,7 +791,7 @@ final class KidsGameScene: SKScene {
             isWiggling = false
             danceEnergy = 0.55
             setupDino()
-            onProgress?(0, freezeRoundsTotal)
+            reportProgress(0, freezeRoundsTotal)
             onCallout?("네온 클럽 오픈! 신나게 흔들어 춤춰요!!", 2.5)
             SoundEngine.shared.startBgm(track: "bgm_freeze", rate: 1.0)
 
@@ -662,7 +803,7 @@ final class KidsGameScene: SKScene {
             animalPause = 0
             animalSuccessCount = 0
             setupAnimalPoseUI()
-            onProgress?(0, animalPoses.count)
+            reportProgress(0, animalPoses.count)
             onCallout?("🦒 \(animalPoses[0].name)! \(animalPoses[0].cue)", 2.8)
             SoundEngine.shared.startBgm(track: "bgm_balloon", rate: 1.0)
 
@@ -673,7 +814,7 @@ final class KidsGameScene: SKScene {
             junglePhaseProgress = 0
             jungleRunCooldown = 0
             setupJungleGame()
-            onProgress?(0, 5)
+            reportProgress(0, 5)
             onCallout?("🌿 달려라 정글 모험! 제자리 달리기 시작!!", 2.8)
             SoundEngine.shared.startBgm(track: "bgm_adventure", rate: 1.0)
 
@@ -682,7 +823,7 @@ final class KidsGameScene: SKScene {
             moleSpawnTimer = 0.45
             moleFeverTriggered = false
             setupMoleGame()
-            onProgress?(0, 10)
+            reportProgress(0, 10)
             onCallout?("🐹 위엔 손 하이파이브! 아래엔 발 톡톡!", 2.8)
             SoundEngine.shared.startBgm(track: "bgm_adventure", rate: 1.0)
 
@@ -701,7 +842,7 @@ final class KidsGameScene: SKScene {
             oneLegNextTimer = 11.0
             balanceStarSpawnTimer = 2.2
             setupBalanceGame()
-            onProgress?(0, 10)
+            reportProgress(0, 10)
             onCallout?("🪵 팔을 활짝 벌려 외나무다리 균형을 잡아요!", 2.8)
             SoundEngine.shared.startBgm(track: "bgm_adventure", rate: 1.0)
         }
@@ -746,15 +887,18 @@ final class KidsGameScene: SKScene {
         }
 
         if feverActive {
-            feverBorder.path = CGPath(rect: CGRect(x: 8, y: 8, width: max(10, size.width - 16), height: max(10, size.height - 16)), transform: nil)
+            if size != lastFeverBorderSize {
+                lastFeverBorderSize = size
+                feverBorder.path = CGPath(rect: CGRect(x: 8, y: 8, width: max(10, size.width - 16), height: max(10, size.height - 16)), transform: nil)
+            }
             let cols: [UIColor] = [.systemPink, .systemYellow, .systemTeal, .systemPurple]
             feverBorder.strokeColor = cols[Int(elapsed * 3) % cols.count]
             feverBorder.alpha = 0.4 + 0.3 * sin(CGFloat(elapsed) * 7)
-        } else {
+        } else if feverBorder.alpha > 0 {
             feverBorder.alpha = 0
         }
 
-        let players = cameraManager?.players ?? []
+        let players = cameraManager?.snapshotPlayers() ?? []
         let minVel = settings.speed.minSlashVelocity
         // Render glowing hand halos & swipe trails ONLY in hand-action games (.fruit, .balloon, .mole)
         let showHandEffects = (gameType == .fruit || gameType == .balloon || gameType == .mole)
@@ -834,22 +978,27 @@ final class KidsGameScene: SKScene {
                         if tr.count >= 2 && e > 0.08 && confFade >= 0.02 {
                             let rig = trailRigs[slot]
                             let segCount = tr.count - 1
+                            let invCount = 1.0 / CGFloat(tr.count)
                             for band in rig.bands {
                                 for segIdx in 0..<band.segments.count {
                                     let seg = band.segments[segIdx]
                                     if segIdx < segCount {
                                         let i = segIdx + 1
-                                        let ratio = CGFloat(i) / CGFloat(tr.count)
-                                        let p = CGMutablePath()
-                                        p.move(to: CGPoint(x: tr[i - 1].x, y: tr[i - 1].y + band.offsetY))
-                                        p.addLine(to: CGPoint(x: tr[i].x, y: tr[i].y + band.offsetY))
-                                        seg.path = p
-                                        seg.lineWidth = max(2.0, band.baseWidth * ratio * (0.5 + 0.6 * e))
+                                        let p0 = tr[i - 1]
+                                        let p1 = tr[i]
+                                        let sdx = p1.x - p0.x
+                                        let sdy = p1.y - p0.y
+                                        let segLen = hypot(sdx, sdy)
+                                        let ratio = CGFloat(i) * invCount
+                                        let w = max(2.0, band.baseWidth * ratio * (0.5 + 0.6 * e))
+                                        seg.position = CGPoint(x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5 + band.offsetY)
+                                        seg.zRotation = atan2(sdy, sdx)
+                                        seg.xScale = (segLen + w) / 48.0
+                                        seg.yScale = w / 24.0
                                         seg.alpha = ratio * 0.78 * e * confFade
                                         seg.isHidden = false
                                     } else if !seg.isHidden {
                                         seg.isHidden = true
-                                        seg.path = nil
                                     }
                                 }
                             }
@@ -922,7 +1071,7 @@ final class KidsGameScene: SKScene {
         let hMult = settings.speed.hitboxMult
 
         zenElapsed += dt
-        onProgress?(min(9, Int((zenElapsed / zenDuration) * 9.0)), 9)
+        reportProgress(min(9, Int((zenElapsed / zenDuration) * 9.0)), 9)
 
         if feverBurstTimer > 0 {
             feverBurstTimer -= dt
@@ -1123,7 +1272,6 @@ final class KidsGameScene: SKScene {
             boss.zRotation = sin(t * 2.5) * 0.06
             boss.color = UIColor(red: 1.0, green: 0.94, blue: 0.70, alpha: 1.0)
             boss.colorBlendFactor = bossShake > 0.35 ? 0.35 : 0.0
-            updateBossBar(remaining: max(0, 1.0 - rage))
 
             // Pulsing boss aura + 8 orbiting golden 5-pointed stars (matching PixiJS L642-L649)
             if let vfx = bossVfxNode {
@@ -1145,6 +1293,7 @@ final class KidsGameScene: SKScene {
                         bossHits += 1
                         bossShake = 1.15
                         bossCooldown = 0.19
+                        updateBossBar(remaining: max(0, 1.0 - CGFloat(bossHits) / CGFloat(max(1, bossMaxHits))))
                         SoundEngine.shared.playBossHit(bossHits)
                         let words = ["퍽!", "쾅!", "짜릿!", "우지끈!", "파워 업!"]
                         spawnSplatter(at: CGPoint(x: hx, y: hy), color: cfg.color, scale: 0.95)
@@ -1599,23 +1748,15 @@ final class KidsGameScene: SKScene {
             color,
         ]
         let count = power >= 2 ? 14 : 9
+        let bTex = soapBubbleTex
         for i in 0..<count {
             let r = CGFloat.random(in: 7...18)
             let ang = CGFloat.random(in: 0...(CGFloat.pi * 2))
             let sp = CGFloat.random(in: 55...200)
-            let bubble = SKShapeNode(circleOfRadius: r)
-            bubble.fillColor = bCols[i % bCols.count].withAlphaComponent(0.25)
-            bubble.strokeColor = UIColor.white.withAlphaComponent(0.85)
-            bubble.lineWidth = 2
+            let bubble = SKSpriteNode(texture: bTex, color: bCols[i % bCols.count], size: CGSize(width: r * 2.4, height: r * 2.4))
+            bubble.colorBlendFactor = 0.42
             bubble.position = CGPoint(x: pos.x + cos(ang) * 18, y: pos.y + sin(ang) * 18)
             bubble.zPosition = 44
-
-            // Crisp white top-left specular highlight dot (Y-up: -x, +y)
-            let highlight = SKShapeNode(circleOfRadius: max(1.5, r * 0.24))
-            highlight.fillColor = UIColor.white.withAlphaComponent(0.90)
-            highlight.strokeColor = .clear
-            highlight.position = CGPoint(x: -r * 0.32, y: r * 0.32)
-            bubble.addChild(highlight)
 
             fxLayer.addChild(bubble)
             if activeBubbles.count >= 80, let oldest = activeBubbles.first {
@@ -2059,10 +2200,13 @@ final class KidsGameScene: SKScene {
         if !isFreezePhase {
             discoBallNode?.zRotation = t * 1.15
         }
-        let spath = CGMutablePath()
-        spath.move(to: CGPoint(x: ballPos.x, y: size.height))
-        spath.addLine(to: CGPoint(x: ballPos.x, y: ballPos.y + ballR))
-        discoString?.path = spath
+        if size != lastDiscoStringSize {
+            lastDiscoStringSize = size
+            let spath = CGMutablePath()
+            spath.move(to: CGPoint(x: ballPos.x, y: size.height))
+            spath.addLine(to: CGPoint(x: ballPos.x, y: ballPos.y + ballR))
+            discoString?.path = spath
+        }
 
         for (k, dot) in discoDots.enumerated() {
             let ang = (isFreezePhase ? 0 : t * (0.45 + CGFloat(k % 3) * 0.18)) + CGFloat(k) * 0.95
@@ -2093,7 +2237,10 @@ final class KidsGameScene: SKScene {
         // 5) 비트에 번쩍이는 네온 프레임 (얼음 중 움직이면 빨간 경고 테두리 + 위험 게이지!)
         let clubCols: [UIColor] = [.systemPink, .systemCyan, .systemYellow, .systemPurple, .systemGreen]
         let frameCol = (isFreezePhase && isWiggling) ? UIColor.systemRed : (isFreezePhase ? UIColor.systemCyan : clubCols[Int(t * beatHz) % clubCols.count])
-        clubBorder?.path = CGPath(rect: CGRect(x: 6, y: 6, width: max(1, size.width - 12), height: max(1, size.height - 12)), transform: nil)
+        if size != lastClubBorderSize {
+            lastClubBorderSize = size
+            clubBorder?.path = CGPath(rect: CGRect(x: 6, y: 6, width: max(1, size.width - 12), height: max(1, size.height - 12)), transform: nil)
+        }
         clubBorder?.strokeColor = frameCol
         clubBorder?.lineWidth = (isFreezePhase && isWiggling) ? 22 : (isFreezePhase ? 14 : (8 + beatPulse * 12))
         clubBorder?.alpha = (isFreezePhase && isWiggling) ? 0.94 : (isFreezePhase ? 0.78 : (0.35 + beatPulse * 0.55))
@@ -2111,10 +2258,14 @@ final class KidsGameScene: SKScene {
             let progPos = CGPoint(x: size.width * 0.5, y: size.height * 0.19)
             freezeProgBg?.position = progPos
             freezeProgFill?.position = progPos
-            let pFillW = max(0, 332 * remRatio)
-            freezeProgFill?.path = pFillW > 4
-                ? CGPath(roundedRect: CGRect(x: -166, y: -9, width: pFillW, height: 18), cornerWidth: 9, cornerHeight: 9, transform: nil)
-                : nil
+            let pStep = Int((remRatio * 120.0).rounded())
+            if pStep != lastFreezeProgStep {
+                lastFreezeProgStep = pStep
+                let pFillW = max(0, 332 * remRatio)
+                freezeProgFill?.path = pFillW > 4
+                    ? CGPath(roundedRect: CGRect(x: -166, y: -9, width: pFillW, height: 18), cornerWidth: 9, cornerHeight: 9, transform: nil)
+                    : nil
+            }
             freezeProgFill?.fillColor = remRatio < 0.25 ? UIColor(red: 0.13, green: 1.0, blue: 0.53, alpha: 1) : .systemCyan
             let progText = remRatio < 0.25 ? "⚡ 곧 땡!! \(remSec)초" : "❄️ 얼음 버티기 \(remSec)초"
             let progStroke = remRatio < 0.25
@@ -2127,11 +2278,15 @@ final class KidsGameScene: SKScene {
             freezeMeterBg?.position = meterPos
             freezeMeterBg?.strokeColor = isWiggling ? .systemRed : .systemCyan
             let danger = min(1.0, freezeWiggleTime / 0.48)
-            let fillW = max(0, 224 * danger)
+            let dStep = Int((danger * 100.0).rounded())
             freezeMeterFill?.position = meterPos
-            freezeMeterFill?.path = fillW > 2
-                ? CGPath(roundedRect: CGRect(x: -112, y: -4, width: fillW, height: 8), cornerWidth: 4, cornerHeight: 4, transform: nil)
-                : nil
+            if dStep != lastFreezeDangerStep {
+                lastFreezeDangerStep = dStep
+                let fillW = max(0, 224 * danger)
+                freezeMeterFill?.path = fillW > 2
+                    ? CGPath(roundedRect: CGRect(x: -112, y: -4, width: fillW, height: 8), cornerWidth: 4, cornerHeight: 4, transform: nil)
+                    : nil
+            }
             freezeMeterFill?.fillColor = danger >= 0.85 ? .systemRed : (danger >= 0.3 ? .systemYellow : .systemCyan)
         }
 
@@ -2169,7 +2324,7 @@ final class KidsGameScene: SKScene {
             let cy = size.height * ny
             let r = baseR * scaleMul
             let poseKey = isFreezePhase ? "\(id)_freeze" : ((beatIdx + ph) % 2 == 0 ? "\(id)_dance1" : "\(id)_dance2")
-            if let tex = textures[poseKey] {
+            if let tex = textures[poseKey], sp.texture !== tex {
                 sp.texture = tex
             }
             sp.size = CGSize(width: r * 2.25, height: r * 2.25)
@@ -2630,28 +2785,36 @@ final class KidsGameScene: SKScene {
             let piePos = CGPoint(x: 68, y: size.height - 96)
             animalPieBg?.position = piePos
             let timeRatio = max(0, min(1, animalTimer / animalTimeLimit))
-            let piePath = CGMutablePath()
-            if timeRatio > 0.01 {
-                piePath.move(to: .zero)
-                piePath.addArc(center: .zero, radius: 30, startAngle: .pi / 2, endAngle: .pi / 2 - (.pi * 2 * timeRatio), clockwise: true)
-                piePath.closeSubpath()
-            }
+            let pieStep = Int((timeRatio * 120.0).rounded())
             animalPieFill?.position = piePos
-            animalPieFill?.path = piePath
+            if pieStep != lastAnimalPieStep {
+                lastAnimalPieStep = pieStep
+                let piePath = CGMutablePath()
+                if timeRatio > 0.01 {
+                    piePath.move(to: .zero)
+                    piePath.addArc(center: .zero, radius: 30, startAngle: .pi / 2, endAngle: .pi / 2 - (.pi * 2 * timeRatio), clockwise: true)
+                    piePath.closeSubpath()
+                }
+                animalPieFill?.path = piePath
+            }
             animalPieFill?.fillColor = timeRatio < 0.25 ? .systemRed : .systemYellow
 
-            for i in animalPoses.indices {
-                let bx = 136 + CGFloat(i) * 44
-                let by = piePos.y
-                let isCur = i == animalIndex
-                let isDone = animalCleared[i]
-                animalBadgeRings[i].position = CGPoint(x: bx, y: by)
-                animalBadgeRings[i].fillColor = isDone ? UIColor(red: 1.0, green: 0.95, blue: 0.69, alpha: 0.95) : .white.withAlphaComponent(0.94)
-                animalBadgeRings[i].strokeColor = isCur ? .systemYellow : (isDone ? .systemGreen : UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1))
-                animalBadgeRings[i].lineWidth = isCur ? 4.5 : 2.5
-                animalBadgeRings[i].setScale(isCur ? 1.15 : 1.0)
-                animalBadgeSprites[i].position = CGPoint(x: bx, y: by)
-                animalBadgeSprites[i].alpha = isDone ? 0.55 : 1.0
+            if lastAnimalBadgeIndex != animalIndex || lastAnimalBadgeSize != size {
+                lastAnimalBadgeIndex = animalIndex
+                lastAnimalBadgeSize = size
+                for i in animalPoses.indices {
+                    let bx = 136 + CGFloat(i) * 44
+                    let by = piePos.y
+                    let isCur = i == animalIndex
+                    let isDone = animalCleared[i]
+                    animalBadgeRings[i].position = CGPoint(x: bx, y: by)
+                    animalBadgeRings[i].fillColor = isDone ? UIColor(red: 1.0, green: 0.95, blue: 0.69, alpha: 0.95) : .white.withAlphaComponent(0.94)
+                    animalBadgeRings[i].strokeColor = isCur ? .systemYellow : (isDone ? .systemGreen : UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1))
+                    animalBadgeRings[i].lineWidth = isCur ? 4.5 : 2.5
+                    animalBadgeRings[i].setScale(isCur ? 1.15 : 1.0)
+                    animalBadgeSprites[i].position = CGPoint(x: bx, y: by)
+                    animalBadgeSprites[i].alpha = isDone ? 0.55 : 1.0
+                }
             }
 
             let panelX = size.width * 0.80
@@ -2669,10 +2832,14 @@ final class KidsGameScene: SKScene {
             animalBarBg?.position = barPos
             animalBarFill?.position = barPos
             let holdRatio = max(0, min(1, animalHold / animalHoldTarget))
-            let fillW = max(0, 202 * holdRatio)
-            animalBarFill?.path = fillW > 3
-                ? CGPath(roundedRect: CGRect(x: -101, y: -7, width: fillW, height: 14), cornerWidth: 7, cornerHeight: 7, transform: nil)
-                : nil
+            let holdStep = Int((holdRatio * 100.0).rounded())
+            if holdStep != lastAnimalHoldStep {
+                lastAnimalHoldStep = holdStep
+                let fillW = max(0, 202 * holdRatio)
+                animalBarFill?.path = fillW > 3
+                    ? CGPath(roundedRect: CGRect(x: -101, y: -7, width: fillW, height: 14), cornerWidth: 7, cornerHeight: 7, transform: nil)
+                    : nil
+            }
             animalBarFill?.fillColor = effectiveMatched ? UIColor(red: 0.22, green: 0.94, blue: 0.49, alpha: 1) : .systemCyan
 
             // Crisp navy-outlined golden 3D star at the right end of the hold bar
@@ -2682,7 +2849,9 @@ final class KidsGameScene: SKScene {
 
             let guideDim = min(size.width, size.height) * 0.40
             let guidePos = CGPoint(x: size.width * 0.84, y: size.height * 0.30 + sin(t * (effectiveMatched ? 8 : 3)) * (effectiveMatched ? 8 : 4))
-            animalGuideNode?.texture = textures[cur.tex]
+            if let gTex = textures[cur.tex], animalGuideNode?.texture !== gTex {
+                animalGuideNode?.texture = gTex
+            }
             animalGuideNode?.size = CGSize(width: guideDim, height: guideDim)
             animalGuideNode?.position = guidePos
             animalGuideNode?.setScale(1.0 + 0.06 * animalMatchBlend)
@@ -2893,14 +3062,18 @@ final class KidsGameScene: SKScene {
             iconNode: icon,
             labelBg: lblBg,
             label: lbl,
-            radius: radius
+            radius: radius,
+            lastIconId: iconId
         )
     }
 
     private func updateCircularMoveBadge(_ badge: CircularMoveBadge, iconId: String? = nil, title: String? = nil, progress: CGFloat, active: Bool, pulse: CGFloat = 1.0) {
-        if let iconId {
+        if let iconId, iconId != badge.lastIconId {
+            badge.lastIconId = iconId
             if let poseTex = textures["pose_\(iconId)"] {
-                badge.iconSprite.texture = poseTex
+                if badge.iconSprite.texture !== poseTex {
+                    badge.iconSprite.texture = poseTex
+                }
                 badge.iconSprite.isHidden = false
                 badge.iconNode.isHidden = true
             } else {
@@ -2909,41 +3082,52 @@ final class KidsGameScene: SKScene {
                 badge.iconNode.path = makeStickFigurePath(id: iconId, scale: badge.radius * 0.44)
             }
         }
-        let displayTitle = title ?? badge.label.attributedText?.string ?? ""
-        if !displayTitle.isEmpty {
+        if let displayTitle = title, !displayTitle.isEmpty {
             let strokeCol = active
                 ? UIColor(red: 0.08, green: 0.33, blue: 0.18, alpha: 1) // #14532D
                 : UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 1) // #0F172A
             setStickerLabel(badge.label, text: displayTitle, fontSize: 14, strokeColor: strokeCol, strokeWidth: 5.0, cacheKey: "\(displayTitle)|\(active)")
+        } else if badge.lastActive != active, let curTitle = badge.label.attributedText?.string, !curTitle.isEmpty {
+            let strokeCol = active
+                ? UIColor(red: 0.08, green: 0.33, blue: 0.18, alpha: 1)
+                : UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 1)
+            setStickerLabel(badge.label, text: curTitle, fontSize: 14, strokeColor: strokeCol, strokeWidth: 5.0, cacheKey: "\(curTitle)|\(active)")
         }
-        badge.labelBg.fillColor = active
-            ? UIColor(red: 0.09, green: 0.40, blue: 0.20, alpha: 0.94)
-            : UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 0.76)
-        badge.labelBg.strokeColor = active
-            ? UIColor(red: 0.13, green: 1.0, blue: 0.53, alpha: 0.95)
-            : UIColor.white.withAlphaComponent(0.75)
+        if badge.lastActive != active {
+            badge.lastActive = active
+            badge.labelBg.fillColor = active
+                ? UIColor(red: 0.09, green: 0.40, blue: 0.20, alpha: 0.94)
+                : UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 0.76)
+            badge.labelBg.strokeColor = active
+                ? UIColor(red: 0.13, green: 1.0, blue: 0.53, alpha: 0.95)
+                : UIColor.white.withAlphaComponent(0.75)
+            badge.container.alpha = active ? 1.0 : 0.68
+            badge.bgCircle.strokeColor = active
+                ? UIColor(red: 0.13, green: 0.85, blue: 0.45, alpha: 1.0)
+                : UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 0.65)
+        }
         let clamped = max(0, min(1, progress))
-        if clamped > 0.01 {
-            let arc = CGMutablePath()
-            arc.addArc(
-                center: .zero,
-                radius: badge.radius + 4.5,
-                startAngle: .pi / 2,
-                endAngle: .pi / 2 - (.pi * 2 * clamped),
-                clockwise: true
-            )
-            badge.progressRing.path = arc
-            badge.progressRing.alpha = 1.0
-        } else {
-            badge.progressRing.path = nil
-            badge.progressRing.alpha = 0
+        let progStep = clamped > 0.01 ? Int((clamped * 120.0).rounded()) : 0
+        if progStep != badge.lastProgressStep {
+            badge.lastProgressStep = progStep
+            if progStep > 0 {
+                let arc = CGMutablePath()
+                arc.addArc(
+                    center: .zero,
+                    radius: badge.radius + 4.5,
+                    startAngle: .pi / 2,
+                    endAngle: .pi / 2 - (.pi * 2 * clamped),
+                    clockwise: true
+                )
+                badge.progressRing.path = arc
+                badge.progressRing.alpha = 1.0
+            } else {
+                badge.progressRing.path = nil
+                badge.progressRing.alpha = 0
+            }
         }
-        badge.container.alpha = active ? 1.0 : 0.68
         badge.container.setScale(active ? pulse : 0.90)
         badge.glowCircle.alpha = active ? (0.45 + 0.35 * clamped) : 0
-        badge.bgCircle.strokeColor = active
-            ? UIColor(red: 0.13, green: 0.85, blue: 0.45, alpha: 1.0)
-            : UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 0.65)
     }
 
     // MARK: - Game 5: Jungle Adventure (60s, Run / Squat under Vine / Jump Star Smash!)
@@ -3120,7 +3304,7 @@ final class KidsGameScene: SKScene {
 
         let totalRatio = max(0, min(1, jungleElapsed / jungleDuration))
         let checkpoints = min(5, Int(totalRatio * 5.0))
-        onProgress?(checkpoints, 5)
+        reportProgress(checkpoints, 5)
 
         if jungleElapsed >= jungleDuration {
             clearJungleStars()
@@ -3134,10 +3318,15 @@ final class KidsGameScene: SKScene {
         let trackPos = CGPoint(x: size.width * 0.5, y: size.height - 54)
         jungleTrackBg?.position = trackPos
         jungleTrackFill?.position = trackPos
-        let fillW = max(0, (trackW - 6) * totalRatio)
-        jungleTrackFill?.path = fillW > 3
-            ? CGPath(roundedRect: CGRect(x: -(trackW - 6) * 0.5, y: -4.5, width: fillW, height: 9), cornerWidth: 4.5, cornerHeight: 4.5, transform: nil)
-            : nil
+        let jStep = Int((totalRatio * 180.0).rounded())
+        if jStep != lastJungleFillStep || size != lastJungleTrackSize {
+            lastJungleFillStep = jStep
+            lastJungleTrackSize = size
+            let fillW = max(0, (trackW - 6) * totalRatio)
+            jungleTrackFill?.path = fillW > 3
+                ? CGPath(roundedRect: CGRect(x: -(trackW - 6) * 0.5, y: -4.5, width: fillW, height: 9), cornerWidth: 4.5, cornerHeight: 4.5, transform: nil)
+                : nil
+        }
         for (i, fl) in jungleFlagNodes.enumerated() {
             let fx = trackPos.x - (trackW * 0.46) + (trackW * 0.92) * (CGFloat(i) / 4.0)
             fl.position = CGPoint(x: fx, y: trackPos.y)
@@ -3412,7 +3601,7 @@ final class KidsGameScene: SKScene {
         let hMult = settings.speed.hitboxMult
 
         moleElapsed += dt
-        onProgress?(min(10, Int((moleElapsed / moleDuration) * 10.0)), 10)
+        reportProgress(min(10, Int((moleElapsed / moleDuration) * 10.0)), 10)
 
         if moleElapsed >= moleDuration {
             feverActive = false
@@ -3756,7 +3945,7 @@ final class KidsGameScene: SKScene {
         let hMult = settings.speed.hitboxMult
 
         balanceElapsed += dt
-        onProgress?(min(10, Int((balanceElapsed / balanceDuration) * 10.0)), 10)
+        reportProgress(min(10, Int((balanceElapsed / balanceDuration) * 10.0)), 10)
 
         if balanceElapsed >= balanceDuration {
             for st in balanceStars { st.node.removeFromParent() }
@@ -3901,11 +4090,17 @@ final class KidsGameScene: SKScene {
                 oneLegHold = max(0, oneLegHold - dt * 0.4)
             }
             let rRatio = oneLegHold / 1.5
-            let arc = CGMutablePath()
-            if rRatio > 0.02 {
-                arc.addArc(center: .zero, radius: 13, startAngle: .pi / 2, endAngle: .pi / 2 - (.pi * 2 * rRatio), clockwise: true)
+            let olStep = rRatio > 0.02 ? Int((rRatio * 80.0).rounded()) : 0
+            if olStep != lastOneLegRingStep {
+                lastOneLegRingStep = olStep
+                if olStep > 0 {
+                    let arc = CGMutablePath()
+                    arc.addArc(center: .zero, radius: 13, startAngle: .pi / 2, endAngle: .pi / 2 - (.pi * 2 * rRatio), clockwise: true)
+                    balanceOneLegRing?.path = arc
+                } else {
+                    balanceOneLegRing?.path = nil
+                }
             }
-            balanceOneLegRing?.path = arc
 
             if oneLegHold >= 1.5 {
                 oneLegActive = false
@@ -3962,6 +4157,20 @@ final class KidsGameScene: SKScene {
         balanceStars = keptStars
     }
 
+    // MARK: - Deduplicated HUD Callback Helpers (Eliminates 60fps Main-Thread Dispatch Spam!)
+    private func reportScore(_ value: Int) {
+        guard value != lastReportedScore else { return }
+        lastReportedScore = value
+        onScore?(value)
+    }
+
+    private func reportProgress(_ done: Int, _ total: Int) {
+        guard done != lastReportedProgressDone || total != lastReportedProgressTotal else { return }
+        lastReportedProgressDone = done
+        lastReportedProgressTotal = total
+        onProgress?(done, total)
+    }
+
     // MARK: - Dopamine VFX & Jua Sticker Typography Helpers
     private func setStickerLabel(
         _ label: SKLabelNode?,
@@ -3992,7 +4201,6 @@ final class KidsGameScene: SKScene {
         for band in trailRigs[slot].bands {
             for seg in band.segments where !seg.isHidden {
                 seg.isHidden = true
-                seg.path = nil
                 seg.alpha = 0
             }
         }
@@ -4089,11 +4297,12 @@ final class KidsGameScene: SKScene {
     private func spawnSplatter(at pos: CGPoint, color: UIColor, scale: CGFloat) {
         let group = SKNode()
         group.position = pos
+        let dTex = dropletParticleTex
         for _ in 0..<7 {
             let r = CGFloat.random(in: 7...19) * scale
-            let blob = SKShapeNode(circleOfRadius: r)
-            blob.fillColor = color.withAlphaComponent(0.38)
-            blob.strokeColor = .clear
+            let blob = SKSpriteNode(texture: dTex, color: color, size: CGSize(width: r * 2.4, height: r * 2.4))
+            blob.colorBlendFactor = 1.0
+            blob.alpha = 0.38
             blob.position = CGPoint(x: CGFloat.random(in: -44...44) * scale, y: CGFloat.random(in: -44...44) * scale)
             group.addChild(blob)
         }
@@ -4173,40 +4382,47 @@ final class KidsGameScene: SKScene {
             .removeFromParent(),
         ]))
 
-        // 3) 18 / 28 / 42 Mixed Golden 5-Pointed Stars & Colored Juicy Droplets with Real Parabolic Gravity!
+        // 3) 18 / 28 / 42 Mixed Golden 5-Pointed Stars & Colored Juicy Droplets (batched GPU SKSpriteNodes!)
         let count = power == 3 ? 42 : (power == 2 ? 28 : 18)
         let goldStarColor = UIColor(red: 1.0, green: 0.863, blue: 0.302, alpha: 1.0) // #FFDC4D
         let maxLife: CGFloat = 0.72 + CGFloat(power) * 0.16
-        for i in 0..<count {
-            let isStar = (i % 2 == 0)
-            let a = (CGFloat.pi * 2.0 * CGFloat(i)) / CGFloat(count) + CGFloat.random(in: 0...0.25)
-            let spd = (140.0 + CGFloat(power) * 65.0) + CGFloat.random(in: 0...(200.0 + CGFloat(power) * 70.0))
-            let pSize = (8.0 + CGFloat(power) * 3.0) + CGFloat.random(in: 0...8.0)
-            let baseScale = pSize / 10.0
+        let sTex = starParticleTex
+        let dTex = dropletParticleTex
+        // Emit droplets first then stars consecutively so SpriteKit batches same-texture sprites into minimal Metal draw calls!
+        for passIsStar in [false, true] {
+            for i in 0..<count where (i % 2 == 0) == passIsStar {
+                let a = (CGFloat.pi * 2.0 * CGFloat(i)) / CGFloat(count) + CGFloat.random(in: 0...0.25)
+                let spd = (140.0 + CGFloat(power) * 65.0) + CGFloat.random(in: 0...(200.0 + CGFloat(power) * 70.0))
+                let pSize = (8.0 + CGFloat(power) * 3.0) + CGFloat.random(in: 0...8.0)
+                let baseScale = pSize / 10.0
 
-            let pNode = SKShapeNode(path: isStar ? unitStarPath : unitDropletPath)
-            pNode.fillColor = isStar ? goldStarColor : color
-            pNode.strokeColor = .clear
-            pNode.blendMode = .add
-            pNode.position = pos
-            pNode.setScale(baseScale)
-            pNode.zPosition = 45
-            fxLayer.addChild(pNode)
+                let pNode = SKSpriteNode(
+                    texture: passIsStar ? sTex : dTex,
+                    color: passIsStar ? goldStarColor : color,
+                    size: passIsStar ? CGSize(width: 32, height: 32) : CGSize(width: 24, height: 24)
+                )
+                pNode.colorBlendFactor = 1.0
+                pNode.blendMode = .add
+                pNode.position = pos
+                pNode.setScale(baseScale)
+                pNode.zPosition = 45
+                fxLayer.addChild(pNode)
 
-            if burstParticles.count >= 200, let oldest = burstParticles.first {
-                oldest.node.removeFromParent()
-                burstParticles.removeFirst()
+                if burstParticles.count >= 200, let oldest = burstParticles.first {
+                    oldest.node.removeFromParent()
+                    burstParticles.removeFirst()
+                }
+                burstParticles.append(BurstParticle(
+                    node: pNode,
+                    vx: cos(a) * spd,
+                    vy: sin(a) * spd + 65.0,
+                    vrot: passIsStar ? CGFloat.random(in: -6.0...6.0) : 0,
+                    life: maxLife,
+                    maxLife: maxLife,
+                    baseScale: baseScale,
+                    isStar: passIsStar
+                ))
             }
-            burstParticles.append(BurstParticle(
-                node: pNode,
-                vx: cos(a) * spd,
-                vy: sin(a) * spd + 65.0,
-                vrot: isStar ? CGFloat.random(in: -6.0...6.0) : 0,
-                life: maxLife,
-                maxLife: maxLife,
-                baseScale: baseScale,
-                isStar: isStar
-            ))
         }
 
         spawnFloatingText(text, at: CGPoint(x: pos.x, y: pos.y + 18), color: color, big: power >= 2)
@@ -4250,10 +4466,10 @@ final class KidsGameScene: SKScene {
 
     private func spawnConfetti() {
         let cols: [UIColor] = [.systemPink, .systemYellow, .systemTeal, .systemBlue, .systemPurple]
+        let cTex = confettiTex
         for i in 0..<100 {
-            let c = SKShapeNode(rectOf: CGSize(width: 12, height: 8), cornerRadius: 2)
-            c.fillColor = cols[i % cols.count]
-            c.strokeColor = .clear
+            let c = SKSpriteNode(texture: cTex, color: cols[i % cols.count], size: CGSize(width: 12, height: 8))
+            c.colorBlendFactor = 1.0
             c.position = CGPoint(x: CGFloat.random(in: 20...(size.width - 20)), y: size.height + CGFloat.random(in: 10...260))
             fxLayer.addChild(c)
             let dur = TimeInterval.random(in: 1.4...2.4)
@@ -4286,7 +4502,7 @@ final class KidsGameScene: SKScene {
             let cy = size.height * ny
             let r = baseR * scaleMul
             let poseKey = (beatIdx + ph) % 2 == 0 ? "\(id)_dance1" : "\(id)_dance2"
-            if let tex = textures[poseKey] { sp.texture = tex }
+            if let tex = textures[poseKey], sp.texture !== tex { sp.texture = tex }
             sp.size = CGSize(width: r * 2.25, height: r * 2.25)
             sp.position = CGPoint(x: cx, y: cy + beatPulse * 18)
             sp.zRotation = sin(t * beatHz * .pi + CGFloat(ph) * 1.5) * 0.11

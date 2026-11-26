@@ -6,11 +6,37 @@ import Vision
 /// Uses iOS 17+ `AVCaptureDevice.RotationCoordinator` so BOTH the camera preview AND
 /// Vision pose coordinates stay 100% upright & mirrored in LandscapeLeft AND LandscapeRight!
 final class VisionCameraManager: NSObject, ObservableObject {
+    enum UIPublishMode {
+        case none            // During .inGame (no modal) -> 0 SwiftUI re-renders! GameScene reads snapshotPlayers() directly.
+        case cursorOnly      // During .select / .clear / modals -> publish airCursor only when moved
+        case readyAndCursor  // During .ready / .countdown -> publish players + airCursor + statusText
+    }
+
     let session = AVCaptureSession()
     @Published var players: [PlayerPose] = []
     @Published var airCursor = AirCursorState()
     @Published var statusText: String = "카메라 준비 중..."
     @Published var isUsingCamera: Bool = false
+
+    // Thread-safe high-rate snapshot for SpriteKit 60fps loop (zero SwiftUI objectWillChange overhead!)
+    private let poseLock = NSLock()
+    private var latestPlayersSnapshot: [PlayerPose] = []
+    private var publishMode: UIPublishMode = .cursorOnly
+    private var lastVisionTime: CFTimeInterval = 0
+    private let minVisionInterval: CFTimeInterval = 0.032 // Cap Vision inference cleanly at ~30fps so GPU/Metal & touch stay silky!
+
+    func snapshotPlayers() -> [PlayerPose] {
+        poseLock.lock()
+        let copy = latestPlayersSnapshot
+        poseLock.unlock()
+        return copy
+    }
+
+    func setUIPublishMode(_ mode: UIPublishMode) {
+        poseLock.lock()
+        publishMode = mode
+        poseLock.unlock()
+    }
 
     private var dominantHandKey: String? = nil
     private var acCandidateKey: String? = nil
@@ -126,16 +152,27 @@ final class VisionCameraManager: NSObject, ObservableObject {
     private var playerStates: [Int: PlayerTrackerState] = [:]
     private var expectedPlayers: Int = 2
     private var isConfigured = false
+    private var desiredCameraRunning = false
     private var viewSize: CGSize = CGSize(width: 852, height: 393)
+    // visionQueue-owned Air Cursor state (prevents cross-thread reads of @Published airCursor!)
+    private var internalAirCursor = AirCursorState()
 
     // Developer touch/drag test mode state
     private var devPointer = CGPoint(x: 0.5, y: 0.5)
     private var devVelocity: CGFloat = 0
 
     func updateViewSize(_ size: CGSize) {
-        if size.width > 10 && size.height > 10 {
-            viewSize = size
-        }
+        guard size.width > 10 && size.height > 10 else { return }
+        poseLock.lock()
+        viewSize = size
+        poseLock.unlock()
+    }
+
+    private func currentViewSize() -> CGSize {
+        poseLock.lock()
+        let sz = viewSize
+        poseLock.unlock()
+        return sz
     }
 
     func setExpectedPlayers(_ count: Int) {
@@ -161,8 +198,10 @@ final class VisionCameraManager: NSObject, ObservableObject {
     }
 
     func start(expectedPlayers: Int, devMode: Bool) {
-        self.expectedPlayers = expectedPlayers
+        let clamped = max(1, min(2, expectedPlayers))
+        self.expectedPlayers = clamped
         visionQueue.async { [weak self] in
+            self?.expectedPlayers = clamped
             self?.playerStates.removeAll()
         }
 
@@ -183,14 +222,21 @@ final class VisionCameraManager: NSObject, ObservableObject {
             self.updateDevPlayers()
         }
         #else
+        // Always route start/stop serialization through `sessionQueue` (never read `session.isRunning` on main thread!)
         checkPermissionAndStartCamera()
         #endif
     }
 
     func stopCamera() {
         sessionQueue.async {
+            self.desiredCameraRunning = false
             if self.session.isRunning {
                 self.session.stopRunning()
+            }
+            DispatchQueue.main.async {
+                if self.isUsingCamera {
+                    self.isUsingCamera = false
+                }
             }
         }
     }
@@ -315,7 +361,7 @@ final class VisionCameraManager: NSObject, ObservableObject {
 
         if expectedPlayers == 1 {
             let d = makeDevMetrics(centerX: 0.5, px: px, py: py, t: t, active: true)
-            players = [
+            let list = [
                 PlayerPose(
                     id: 0,
                     centerX: 0.5,
@@ -328,11 +374,16 @@ final class VisionCameraManager: NSObject, ObservableObject {
                     metrics: d.metrics
                 )
             ]
+            poseLock.lock()
+            latestPlayersSnapshot = list
+            let mode = publishMode
+            poseLock.unlock()
+            if mode == .readyAndCursor { players = list }
         } else {
             let p1Active = px < 0.55
             let d1 = makeDevMetrics(centerX: 0.28, px: px, py: py, t: t, active: p1Active)
             let d2 = makeDevMetrics(centerX: 0.72, px: px, py: py, t: t, active: !p1Active)
-            players = [
+            let list = [
                 PlayerPose(
                     id: 0,
                     centerX: 0.28,
@@ -356,6 +407,11 @@ final class VisionCameraManager: NSObject, ObservableObject {
                     metrics: d2.metrics
                 )
             ]
+            poseLock.lock()
+            latestPlayersSnapshot = list
+            let mode = publishMode
+            poseLock.unlock()
+            if mode == .readyAndCursor { players = list }
         }
     }
 
@@ -384,6 +440,9 @@ final class VisionCameraManager: NSObject, ObservableObject {
 
     private func configureAndRunCamera() {
         sessionQueue.async {
+            self.desiredCameraRunning = true
+            let alreadyRunning = self.isConfigured && self.session.isRunning
+
             if !self.isConfigured {
                 self.session.beginConfiguration()
                 self.session.sessionPreset = .hd1280x720
@@ -408,20 +467,31 @@ final class VisionCameraManager: NSObject, ObservableObject {
                 self.isConfigured = true
             }
 
-            self.setupRotationCoordinatorIfPossible()
+            guard self.desiredCameraRunning else { return }
 
-            if !self.session.isRunning {
-                self.session.startRunning()
+            if !alreadyRunning {
+                self.setupRotationCoordinatorIfPossible()
+                if !self.session.isRunning {
+                    self.session.startRunning()
+                }
             }
+
+            let stillWanted = self.desiredCameraRunning
             DispatchQueue.main.async {
-                self.isUsingCamera = true
-                self.statusText = "카메라 인식 대기 중 · 화면에 전신이 보이게 서 주세요"
+                guard stillWanted else { return }
+                if !self.isUsingCamera {
+                    self.isUsingCamera = true
+                }
+                if !alreadyRunning {
+                    self.statusText = "카메라 인식 대기 중 · 화면에 전신이 보이게 서 주세요"
+                }
             }
         }
     }
 
     /// Automatically keeps preview layer AND videoOutput capture buffers upright & mirrored
     /// regardless of whether the iPhone is held LandscapeLeft or LandscapeRight!
+    /// CRITICAL: Always mutates `videoOutput` connection on `sessionQueue` (NEVER on main thread while session runs!)
     private func setupRotationCoordinatorIfPossible(force: Bool = false) {
         guard let device = self.cameraDevice else { return }
         DispatchQueue.main.async { [weak self] in
@@ -430,8 +500,12 @@ final class VisionCameraManager: NSObject, ObservableObject {
             let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: self.previewLayer)
             self.rotationCoordinator = coordinator
 
-            self.applyPreviewRotation(coordinator.videoRotationAngleForHorizonLevelPreview)
-            self.applyCaptureRotation(coordinator.videoRotationAngleForHorizonLevelCapture)
+            let previewAngle = coordinator.videoRotationAngleForHorizonLevelPreview
+            let captureAngle = coordinator.videoRotationAngleForHorizonLevelCapture
+            self.applyPreviewRotation(previewAngle)
+            self.sessionQueue.async { [weak self] in
+                self?.applyCaptureRotation(captureAngle)
+            }
 
             self.previewRotationObs = coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.new]) { [weak self] _, change in
                 if let angle = change.newValue {
@@ -448,35 +522,43 @@ final class VisionCameraManager: NSObject, ObservableObject {
 
     private func applyPreviewRotation(_ angle: CGFloat) {
         guard let conn = previewLayer?.connection else { return }
-        if conn.isVideoRotationAngleSupported(angle) {
+        if conn.isVideoRotationAngleSupported(angle), conn.videoRotationAngle != angle {
             conn.videoRotationAngle = angle
         }
         if conn.isVideoMirroringSupported {
-            conn.automaticallyAdjustsVideoMirroring = false
-            conn.isVideoMirrored = true
+            if conn.automaticallyAdjustsVideoMirroring {
+                conn.automaticallyAdjustsVideoMirroring = false
+            }
+            if !conn.isVideoMirrored {
+                conn.isVideoMirrored = true
+            }
         }
     }
 
     private func applyCaptureRotation(_ angle: CGFloat) {
         guard let conn = videoOutput.connection(with: .video) else { return }
-        if conn.isVideoRotationAngleSupported(angle) {
+        if conn.isVideoRotationAngleSupported(angle), conn.videoRotationAngle != angle {
             conn.videoRotationAngle = angle
         }
         if conn.isVideoMirroringSupported {
-            conn.automaticallyAdjustsVideoMirroring = false
-            conn.isVideoMirrored = true
+            if conn.automaticallyAdjustsVideoMirroring {
+                conn.automaticallyAdjustsVideoMirroring = false
+            }
+            if !conn.isVideoMirrored {
+                conn.isVideoMirrored = true
+            }
         }
     }
 
     /// Maps normalized [0..1] coordinates from 16:9 camera buffer into the aspect-filled screen coordinates
     /// so glowing hand halos sit accurately on top of the kid's actual hands on wide iPhones!
     /// Keeps off-screen values softly in [-0.5, 1.5] so elbows/hips outside the frame preserve true limb angles.
-    private func mapAspectFill(_ pt: CGPoint, bufferWidth: CGFloat, bufferHeight: CGFloat) -> CGPoint {
-        guard bufferWidth > 0, bufferHeight > 0, viewSize.width > 0, viewSize.height > 0 else {
+    private func mapAspectFill(_ pt: CGPoint, bufferWidth: CGFloat, bufferHeight: CGFloat, screenSize: CGSize) -> CGPoint {
+        guard bufferWidth > 0, bufferHeight > 0, screenSize.width > 0, screenSize.height > 0 else {
             return pt
         }
         let videoAspect = bufferWidth / bufferHeight
-        let screenAspect = viewSize.width / viewSize.height
+        let screenAspect = screenSize.width / screenSize.height
         var x = pt.x
         var y = pt.y
 
@@ -495,11 +577,17 @@ final class VisionCameraManager: NSObject, ObservableObject {
 
 extension VisionCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        // Cap Vision inference cleanly at ~30fps so Metal 60fps rendering & touch responsiveness never starve!
+        let frameNow = CACurrentMediaTime()
+        if frameNow - lastVisionTime < minVisionInterval { return }
+        lastVisionTime = frameNow
+
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let bufW = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
         let bufH = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
-        let screenAspect: CGFloat = (viewSize.width > 10 && viewSize.height > 10)
-            ? (viewSize.width / viewSize.height)
+        let curViewSize = currentViewSize()
+        let screenAspect: CGFloat = (curViewSize.width > 10 && curViewSize.height > 10)
+            ? (curViewSize.width / curViewSize.height)
             : (bufW > 0 && bufH > 0 ? bufW / bufH : 16.0 / 9.0)
 
         // Because `videoOutput` connection is ALREADY rotated upright & mirrored via RotationCoordinator,
@@ -508,12 +596,23 @@ extension VisionCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         do {
             try handler.perform([poseRequest])
             guard let observations = poseRequest.results, !observations.isEmpty else {
+                poseLock.lock()
+                latestPlayersSnapshot = []
+                let mode = publishMode
+                poseLock.unlock()
+
+                guard mode != .none else { return }
                 let nextCursor = self.computeAirCursor(from: [])
                 DispatchQueue.main.async {
-                    self.players = []
-                    self.airCursor = nextCursor
-                    if self.isUsingCamera {
-                        self.statusText = "인식됨: 0/\(self.expectedPlayers)명 · 카메라 앞으로 서 주세요"
+                    if mode == .readyAndCursor {
+                        if !self.players.isEmpty { self.players = [] }
+                        let msg = "인식됨: 0/\(self.expectedPlayers)명 · 카메라 앞으로 서 주세요"
+                        if self.isUsingCamera && self.statusText != msg {
+                            self.statusText = msg
+                        }
+                    }
+                    if self.airCursor.active != nextCursor.active {
+                        self.airCursor = nextCursor
                     }
                 }
                 return
@@ -540,7 +639,7 @@ extension VisionCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
                     guard let p = points[key], p.confidence > 0.02 else { return nil }
                     // Vision origin is bottom-left -> convert to top-left [0..1] -> adjust for resizeAspectFill
                     let topLeft = CGPoint(x: p.location.x, y: 1.0 - p.location.y)
-                    let mapped = mapAspectFill(topLeft, bufferWidth: bufW, bufferHeight: bufH)
+                    let mapped = mapAspectFill(topLeft, bufferWidth: bufW, bufferHeight: bufH, screenSize: curViewSize)
                     return (mapped, CGFloat(p.confidence))
                 }
 
@@ -1011,12 +1110,28 @@ extension VisionCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
                 ))
             }
 
+            // Always publish fresh 30fps poses to the lock-protected snapshot for SpriteKit 60fps gameplay
+            // WITHOUT waking up SwiftUI during `.inGame`!
+            poseLock.lock()
+            latestPlayersSnapshot = limited
+            let mode = publishMode
+            poseLock.unlock()
+
+            guard mode != .none else { return }
+
             let nextCursor = self.computeAirCursor(from: limited)
             DispatchQueue.main.async {
-                self.players = limited
-                self.airCursor = nextCursor
-                if self.isUsingCamera {
-                    self.statusText = "인식됨: \(limited.count)/\(self.expectedPlayers)명 · 실시간 추적 중"
+                if mode == .readyAndCursor {
+                    self.players = limited
+                    let msg = "인식됨: \(limited.count)/\(self.expectedPlayers)명 · 실시간 추적 중"
+                    if self.isUsingCamera && self.statusText != msg {
+                        self.statusText = msg
+                    }
+                }
+                let cursorMoved = self.airCursor.active != nextCursor.active ||
+                    hypot(self.airCursor.x - nextCursor.x, self.airCursor.y - nextCursor.y) >= 0.002
+                if cursorMoved {
+                    self.airCursor = nextCursor
                 }
             }
         } catch {
@@ -1068,9 +1183,10 @@ extension VisionCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             acCandidateHold = 0
             if acLostTimer > 0.18 {
                 dominantHandKey = nil
-                return AirCursorState(active: false, x: airCursor.x, y: airCursor.y)
+                internalAirCursor = AirCursorState(active: false, x: internalAirCursor.x, y: internalAirCursor.y)
+                return internalAirCursor
             }
-            return airCursor
+            return internalAirCursor
         }
         acLostTimer = 0
 
@@ -1107,18 +1223,20 @@ extension VisionCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         let mx = max(0.02, min(0.98, chosen.pt.x))
         let my = max(0.02, min(0.98, chosen.pt.y))
 
-        if !airCursor.active || switched {
-            return AirCursorState(active: true, x: mx, y: my)
+        if !internalAirCursor.active || switched {
+            internalAirCursor = AirCursorState(active: true, x: mx, y: my)
+            return internalAirCursor
         }
 
-        let moveDist = hypot(mx - airCursor.x, my - airCursor.y)
+        let moveDist = hypot(mx - internalAirCursor.x, my - internalAirCursor.y)
         if moveDist < 0.0045 {
-            return airCursor
+            return internalAirCursor
         }
         let alpha: CGFloat = moveDist > 0.03 ? 0.82 : max(0.28, min(0.82, (moveDist - 0.0045) / 0.0255))
-        let sx = airCursor.x + (mx - airCursor.x) * alpha
-        let sy = airCursor.y + (my - airCursor.y) * alpha
-        return AirCursorState(active: true, x: sx, y: sy)
+        let sx = internalAirCursor.x + (mx - internalAirCursor.x) * alpha
+        let sy = internalAirCursor.y + (my - internalAirCursor.y) * alpha
+        internalAirCursor = AirCursorState(active: true, x: sx, y: sy)
+        return internalAirCursor
     }
 }
 

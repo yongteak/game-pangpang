@@ -8,6 +8,7 @@ import Foundation
 final class SoundEngine {
     static let shared = SoundEngine()
 
+    private let audioQueue = DispatchQueue(label: "pp.audio.queue", qos: .userInitiated)
     private let engine = AVAudioEngine()
     private let sfxPlayer = AVAudioPlayerNode()
     private let sampleRate: Double = 44100
@@ -17,14 +18,15 @@ final class SoundEngine {
     private var currentTrack: String?
     private var bgmAllowed: Bool = false
 
-    // Preloaded in-memory SFX data + rotating polyphonic players for 0ms latency!
+    // Preloaded in-memory SFX data + reusable polyphonic player pool on dedicated audioQueue (0ms main-thread impact!)
     private var sfxDataCache: [String: Data] = [:]
-    private var activeSfxPlayers: [AVAudioPlayer] = []
+    private var sfxPlayerPool: [String: [AVAudioPlayer]] = [:]
 
     var volume: Float = 0.8 {
         didSet {
-            DispatchQueue.main.async {
-                self.bgmPlayer?.volume = min(1.0, self.volume * 0.55)
+            let vol = volume
+            audioQueue.async {
+                self.bgmPlayer?.volume = min(1.0, vol * 0.55)
             }
         }
     }
@@ -33,8 +35,10 @@ final class SoundEngine {
         format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
         engine.attach(sfxPlayer)
         engine.connect(sfxPlayer, to: engine.mainMixerNode, format: format)
-        configureAudioSession()
-        preloadSfxFiles()
+        audioQueue.async {
+            self.configureAudioSession()
+            self.preloadSfxFiles()
+        }
     }
 
     private func preloadSfxFiles() {
@@ -56,19 +60,32 @@ final class SoundEngine {
 
     @discardableResult
     private func playSfxFile(_ key: String, gain: Float = 0.9, rate: Float = 1.0) -> Bool {
-        guard volume > 0.01, let data = sfxDataCache[key] else { return false }
-        let work = {
-            // Prune finished players to keep memory tiny
-            self.activeSfxPlayers.removeAll { !$0.isPlaying }
-            guard let p = try? AVAudioPlayer(data: data) else { return }
-            p.enableRate = true
-            p.rate = max(0.7, min(1.6, rate))
-            p.volume = min(1.0, gain * self.volume)
-            p.prepareToPlay()
-            p.play()
-            self.activeSfxPlayers.append(p)
+        let vol = volume
+        guard vol > 0.01 else { return true }
+        audioQueue.async {
+            guard let data = self.sfxDataCache[key] else { return }
+            var pool = self.sfxPlayerPool[key] ?? []
+            let player: AVAudioPlayer
+            if let idle = pool.first(where: { !$0.isPlaying }) {
+                player = idle
+                player.currentTime = 0
+            } else if pool.count < 4, let created = try? AVAudioPlayer(data: data) {
+                created.enableRate = true
+                created.prepareToPlay()
+                pool.append(created)
+                self.sfxPlayerPool[key] = pool
+                player = created
+            } else if let oldest = pool.first {
+                oldest.stop()
+                oldest.currentTime = 0
+                player = oldest
+            } else {
+                return
+            }
+            player.rate = max(0.7, min(1.6, rate))
+            player.volume = min(1.0, gain * vol)
+            player.play()
         }
-        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
         return true
     }
 
@@ -91,24 +108,24 @@ final class SoundEngine {
 
     /// Central lifecycle gate: set `false` on Home / Select / Ready / Clear / Background!
     func setBgmAllowed(_ allowed: Bool) {
-        let work = {
+        audioQueue.async {
             self.bgmAllowed = allowed
             if !allowed {
                 self.stopBgmImmediate()
             }
         }
-        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 
     func startBgm(track: String, rate: Float = 1.0) {
-        let work = {
+        let vol = volume
+        audioQueue.async {
             guard self.bgmAllowed else { return }
             let clampedRate = max(0.85, min(1.3, rate))
 
             // Smoothly update rate if same track is already playing
             if let bp = self.bgmPlayer, self.currentTrack == track, bp.isPlaying {
                 bp.rate = clampedRate
-                bp.volume = min(1.0, self.volume * 0.55)
+                bp.volume = min(1.0, vol * 0.55)
                 return
             }
 
@@ -121,7 +138,7 @@ final class SoundEngine {
                 player.numberOfLoops = -1
                 player.enableRate = true
                 player.rate = clampedRate
-                player.volume = min(1.0, self.volume * 0.55)
+                player.volume = min(1.0, vol * 0.55)
                 player.prepareToPlay()
                 player.play()
                 self.bgmPlayer = player
@@ -130,48 +147,45 @@ final class SoundEngine {
                 // Ignore audio load errors gracefully
             }
         }
-        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 
     func setBgmRate(_ rate: Float) {
-        DispatchQueue.main.async {
+        audioQueue.async {
             self.bgmPlayer?.rate = max(0.85, min(1.3, rate))
         }
     }
 
     func pauseBgm() {
-        DispatchQueue.main.async {
+        audioQueue.async {
             self.bgmPlayer?.pause()
         }
     }
 
     func resumeBgm() {
-        DispatchQueue.main.async {
+        let vol = volume
+        audioQueue.async {
             guard self.bgmAllowed else { return }
-            self.bgmPlayer?.volume = min(1.0, self.volume * 0.55)
+            self.bgmPlayer?.volume = min(1.0, vol * 0.55)
             self.bgmPlayer?.play()
         }
     }
 
     func stopBgm() {
-        if Thread.isMainThread {
-            stopBgmImmediate()
-        } else {
-            DispatchQueue.main.async { self.stopBgmImmediate() }
+        audioQueue.async {
+            self.stopBgmImmediate()
         }
     }
 
     func fadeOutBgm(duration: TimeInterval = 1.1) {
-        let work = {
+        audioQueue.async {
             guard let player = self.bgmPlayer else { return }
             player.setVolume(0, fadeDuration: duration)
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.05) {
+            self.audioQueue.asyncAfter(deadline: .now() + duration + 0.05) {
                 if self.bgmPlayer === player {
                     self.stopBgmImmediate()
                 }
             }
         }
-        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 
     private func stopBgmImmediate() {
@@ -180,27 +194,30 @@ final class SoundEngine {
         currentTrack = nil
     }
 
-    // MARK: - Low-latency Synthesized SFX
+    // MARK: - Low-latency Synthesized SFX (offloaded to audioQueue so main thread never blocks)
     func playTone(freq: Double, duration: Double, gain: Float = 0.25, freqEnd: Double? = nil) {
-        guard volume > 0.01 else { return }
-        ensureRunning()
+        let vol = volume
+        guard vol > 0.01 else { return }
+        audioQueue.async {
+            self.ensureRunning()
 
-        let frameCount = AVAudioFrameCount(sampleRate * duration)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-        buffer.frameLength = frameCount
-        guard let data = buffer.floatChannelData?[0] else { return }
+            let frameCount = AVAudioFrameCount(self.sampleRate * duration)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: self.format, frameCapacity: frameCount) else { return }
+            buffer.frameLength = frameCount
+            guard let data = buffer.floatChannelData?[0] else { return }
 
-        let amp = gain * volume
-        let endF = freqEnd ?? freq
-        for i in 0..<Int(frameCount) {
-            let p = Double(i) / Double(max(1, frameCount))
-            let t = Double(i) / sampleRate
-            let f = freq + (endF - freq) * p
-            let env = Float(min(1.0, p / 0.03) * exp(-4.8 * p))
-            let wave = sin(2.0 * .pi * f * t) + 0.22 * sin(2.0 * .pi * f * 2.0 * t) * exp(-8.0 * p)
-            data[i] = Float(wave) * amp * env
+            let amp = gain * vol
+            let endF = freqEnd ?? freq
+            for i in 0..<Int(frameCount) {
+                let p = Double(i) / Double(max(1, frameCount))
+                let t = Double(i) / self.sampleRate
+                let f = freq + (endF - freq) * p
+                let env = Float(min(1.0, p / 0.03) * exp(-4.8 * p))
+                let wave = sin(2.0 * .pi * f * t) + 0.22 * sin(2.0 * .pi * f * 2.0 * t) * exp(-8.0 * p)
+                data[i] = Float(wave) * amp * env
+            }
+            self.sfxPlayer.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
         }
-        sfxPlayer.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
     }
 
     func playClick() {
@@ -209,7 +226,7 @@ final class SoundEngine {
 
     func playReadyOk() {
         playTone(freq: 587.33, duration: 0.14, gain: 0.24)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+        audioQueue.asyncAfter(deadline: .now() + 0.08) {
             self.playTone(freq: 880, duration: 0.2, gain: 0.24)
         }
     }
@@ -219,7 +236,7 @@ final class SoundEngine {
             playTone(freq: 523.25, duration: 0.16, gain: 0.25)
         } else {
             playTone(freq: 783.99, duration: 0.14, gain: 0.26)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            audioQueue.asyncAfter(deadline: .now() + 0.08) {
                 self.playTone(freq: 1046.5, duration: 0.32, gain: 0.28)
             }
         }
@@ -245,7 +262,7 @@ final class SoundEngine {
         let scale: [Double] = [523.25, 587.33, 659.25, 783.99, 880.0, 987.77, 1046.5, 1174.66, 1318.5, 1567.98]
         let f = scale[min(combo, scale.count - 1)]
         playTone(freq: 380 + Double(min(combo, 8)) * 35, duration: 0.1, gain: 0.26, freqEnd: 980)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+        audioQueue.asyncAfter(deadline: .now() + 0.02) {
             self.playTone(freq: f, duration: 0.22, gain: 0.24)
         }
     }
@@ -258,7 +275,7 @@ final class SoundEngine {
         let scale: [Double] = [440, 493.88, 523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66]
         let chime = scale[min(combo, scale.count - 1)]
         playTone(freq: 190, duration: 0.14, gain: 0.32, freqEnd: 460)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+        audioQueue.asyncAfter(deadline: .now() + 0.02) {
             self.playTone(freq: chime, duration: 0.24, gain: 0.22)
         }
     }
@@ -267,7 +284,7 @@ final class SoundEngine {
         if playSfxFile("sfx_balloon_milestone", gain: 0.96, rate: 1.0) { return }
         let notes = [523.25, 659.25, 783.99, 1046.5, 1318.5]
         for (idx, n) in notes.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(idx) * 0.055) {
+            audioQueue.asyncAfter(deadline: .now() + Double(idx) * 0.055) {
                 self.playTone(freq: n, duration: 0.28, gain: 0.22)
             }
         }
@@ -277,7 +294,7 @@ final class SoundEngine {
         if playSfxFile("sfx_golden_pop", gain: 0.94, rate: 1.0) { return }
         let notes = [783.99, 1046.5, 1318.5, 1567.98]
         for (idx, n) in notes.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(idx) * 0.04) {
+            audioQueue.asyncAfter(deadline: .now() + Double(idx) * 0.04) {
                 self.playTone(freq: n, duration: 0.28, gain: 0.22)
             }
         }
@@ -288,7 +305,7 @@ final class SoundEngine {
         playTone(freq: 220, duration: 0.34, gain: 0.24, freqEnd: 880)
         let notes = [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98]
         for (idx, n) in notes.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(idx) * 0.035) {
+            audioQueue.asyncAfter(deadline: .now() + Double(idx) * 0.035) {
                 self.playTone(freq: n, duration: 0.34, gain: 0.2)
             }
         }
@@ -297,7 +314,7 @@ final class SoundEngine {
     func playFeverStart() {
         let notes = [523.25, 659.25, 783.99, 1046.5]
         for (idx, n) in notes.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(idx) * 0.07) {
+            audioQueue.asyncAfter(deadline: .now() + Double(idx) * 0.07) {
                 self.playTone(freq: n, duration: 0.22, gain: 0.24)
             }
         }
@@ -323,7 +340,7 @@ final class SoundEngine {
     func playFreezeCue() {
         if playSfxFile("sfx_dj_scratch", gain: 0.96, rate: 1.0) { return }
         playTone(freq: 880, duration: 0.1, gain: 0.16)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        audioQueue.asyncAfter(deadline: .now() + 0.1) {
             self.playTone(freq: 440, duration: 0.22, gain: 0.16)
         }
     }
@@ -340,14 +357,14 @@ final class SoundEngine {
 
     func playFreezeWiggle() {
         playTone(freq: 360, duration: 0.14, gain: 0.2, freqEnd: 240)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+        audioQueue.asyncAfter(deadline: .now() + 0.06) {
             self.playTone(freq: 420, duration: 0.14, gain: 0.22, freqEnd: 290)
         }
     }
 
     func playFreezeFail() {
         playTone(freq: 280, duration: 0.18, gain: 0.24, freqEnd: 220)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+        audioQueue.asyncAfter(deadline: .now() + 0.16) {
             self.playTone(freq: 210, duration: 0.34, gain: 0.26, freqEnd: 135)
         }
     }
@@ -356,7 +373,7 @@ final class SoundEngine {
         let rate = (isGold ? 1.12 : 0.96) + Float(min(combo, 8)) * 0.035
         if playSfxFile("sfx_mole_bonk", gain: isGold ? 0.96 : 0.90, rate: rate) { return }
         playTone(freq: isGold ? 420 : 280, duration: 0.11, gain: 0.30, freqEnd: isGold ? 960 : 620)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+        audioQueue.asyncAfter(deadline: .now() + 0.03) {
             self.playTone(freq: isGold ? 1174.66 : 783.99, duration: 0.20, gain: 0.24)
         }
     }
@@ -364,7 +381,7 @@ final class SoundEngine {
     func playJumpStar() {
         if playSfxFile("sfx_jump_star", gain: 0.94, rate: Float.random(in: 0.96...1.08)) { return }
         playTone(freq: 360, duration: 0.16, gain: 0.26, freqEnd: 880)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.07) {
+        audioQueue.asyncAfter(deadline: .now() + 0.07) {
             self.playTone(freq: 1046.5, duration: 0.22, gain: 0.24, freqEnd: 1318.5)
         }
     }
@@ -372,7 +389,7 @@ final class SoundEngine {
     func playWindWhoosh() {
         if playSfxFile("sfx_wind_whoosh", gain: 0.85, rate: Float.random(in: 0.92...1.08)) { return }
         playTone(freq: 210, duration: 0.26, gain: 0.18, freqEnd: 460)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+        audioQueue.asyncAfter(deadline: .now() + 0.18) {
             self.playTone(freq: 440, duration: 0.28, gain: 0.15, freqEnd: 190)
         }
     }
@@ -385,7 +402,7 @@ final class SoundEngine {
             (1046.5, 0.65, 0.42),
         ]
         for (f, d, delay) in seq {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            audioQueue.asyncAfter(deadline: .now() + delay) {
                 self.playTone(freq: f, duration: d, gain: 0.22)
             }
         }
