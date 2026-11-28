@@ -66,6 +66,14 @@ class PangPangApp {
       loadImg("./assets/popo_head.png"),
     ];
 
+    // Phase 4: In-memory Polaroid Photo Album buffer (privacy-first: cleared on replay/exit!)
+    this.polaroidCuts = [];
+    this.polaroidCanvas = document.createElement("canvas");
+    this.polaroidCanvas.width = 480;
+    this.polaroidCanvas.height = 480;
+    this.polaroidCtx = this.polaroidCanvas.getContext("2d");
+    this.polaroidStickerCache = {};
+
     this.el = {
       viewport: document.getElementById("stage-viewport"),
       video: document.getElementById("camera-video"),
@@ -102,6 +110,9 @@ class PangPangApp {
       scoreValue: document.getElementById("score-value"),
       ingameCallout: document.getElementById("ingame-callout"),
       clearSummary: document.getElementById("clear-summary"),
+      polaroidAlbum: document.getElementById("polaroid-album"),
+      polaroidGrid: document.getElementById("polaroid-grid"),
+      albumSummary: document.getElementById("album-summary"),
       modalSettings: document.getElementById("modal-settings"),
       modalPause: document.getElementById("modal-pause"),
       setPlayers: document.getElementById("set-players"),
@@ -159,8 +170,17 @@ class PangPangApp {
           }
         }
       },
+      onCapturePolaroid: (payload) => {
+        this.capturePolaroidSnapshot(payload);
+      },
       onFinish: (summary) => {
         this.el.clearSummary.textContent = summary;
+        if (this.selectedGame === "animal") {
+          this.renderPolaroidClearAlbum(summary);
+        } else {
+          this.el.screens.clear.classList.remove("has-polaroids");
+          this.el.polaroidAlbum?.classList.add("hidden");
+        }
         this.showScreen("clear");
       },
     });
@@ -170,6 +190,7 @@ class PangPangApp {
     this.syncSettingsUI();
     this.resizeCanvas();
     window.addEventListener("resize", () => this.resizeCanvas());
+    window.__pangpang = this;
     requestAnimationFrame((t) => this.loop(t));
   }
 
@@ -527,6 +548,9 @@ class PangPangApp {
     this.sound.setBgmAllowed(isPlaying);
     if (!isPlaying && name !== "clear") {
       this.engine.stop();
+      this.polaroidCuts = [];
+      this.el.screens.clear?.classList.remove("has-polaroids");
+      this.el.polaroidAlbum?.classList.add("hidden");
     }
 
     Object.entries(this.el.screens).forEach(([k, node]) => {
@@ -976,10 +1000,265 @@ class PangPangApp {
 
   startInGame() {
     this.paused = false;
+    this.polaroidCuts = [];
+    this.el.screens.clear.classList.remove("has-polaroids");
+    this.el.polaroidAlbum?.classList.add("hidden");
     this.showScreen("ingame");
     const hideDots = this.selectedGame === "animal" || this.selectedGame === "jungle";
     this.el.progressDots.classList.toggle("hidden", hideDots);
     this.engine.reset(this.selectedGame, this.settings);
+  }
+
+  /** Helper: load pose sticker image synchronously from Pixi textures or Image cache */
+  getStickerImageSource(texKey) {
+    if (!texKey) return null;
+    const tex = this.pixi?.textures?.[texKey];
+    const res = tex?.source?.resource;
+    if (res && (res instanceof HTMLImageElement || res instanceof ImageBitmap || res instanceof HTMLCanvasElement)) {
+      return res;
+    }
+    if (!this.polaroidStickerCache[texKey]) {
+      this.polaroidStickerCache[texKey] = loadImg(`./assets/${texKey}.png`);
+    }
+    const im = this.polaroidStickerCache[texKey];
+    return im && im.complete && im.naturalWidth > 0 ? im : null;
+  }
+
+  /**
+   * Phase 4: Peak-Expression Smart-Cropped 1:1 480x480 Polaroid Snapshot!
+   * - Live camera: smart-crops 1:1 mirrored square centered on player's bbox.
+   * - Dev / no-camera mode: renders a bright pastel sunlit living-room portrait with 3D clay mascot!
+   */
+  buildStylizedPolaroidDataUrl(pose) {
+    const ctx = this.polaroidCtx;
+    const S = 480;
+    ctx.save();
+    // Soft warm sunlit living-room gradient backdrop
+    const bg = ctx.createLinearGradient(0, 0, S, S);
+    bg.addColorStop(0, "#FFF8EA");
+    bg.addColorStop(0.55, "#FDEEE2");
+    bg.addColorStop(1, "#DFF3FF");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, S, S);
+
+    // Subtle pastel playmat & window sunlight rays
+    ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+    ctx.beginPath();
+    ctx.arc(S * 0.22, S * 0.18, 170, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Pastel floor mat at bottom
+    const matCols = ["#F9D5D3", "#FFF3C4", "#D4F5E9", "#DBEAFE"];
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = matCols[i];
+      ctx.fillRect(i * (S / 4), S * 0.78, S / 4 + 1, S * 0.22);
+    }
+
+    // Glowing halo behind character
+    const halo = ctx.createRadialGradient(S * 0.5, S * 0.48, 24, S * 0.5, S * 0.48, 185);
+    halo.addColorStop(0, (pose.color || "#FFD43B") + "44");
+    halo.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, S, S);
+
+    // Sparkle stars
+    const drawSparkle = (cx, cy, r, col) => {
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const rad = i % 2 === 0 ? r : r * 0.35;
+        const a = (i * Math.PI) / 4;
+        if (i === 0) ctx.moveTo(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad);
+        else ctx.lineTo(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad);
+      }
+      ctx.closePath();
+      ctx.fill();
+    };
+    drawSparkle(96, 98, 16, "#FFD43B");
+    drawSparkle(386, 112, 14, "#FF7D89");
+    drawSparkle(364, 332, 12, "#4AD3C8");
+    drawSparkle(112, 326, 11, "#C084FC");
+
+    if (pose.isCoop) {
+      const mImg = this.getStickerImageSource("momo_dance1") || this.mascotHeads[0];
+      const pImg = this.getStickerImageSource("popo_dance1") || this.mascotHeads[1];
+      const hImg = this.getStickerImageSource("fx_coop_heart");
+      if (mImg) ctx.drawImage(mImg, 44, 146, 200, 220);
+      if (pImg) ctx.drawImage(pImg, 236, 146, 200, 220);
+      if (hImg) ctx.drawImage(hImg, 165, 92, 150, 150);
+    } else {
+      const mainImg = this.getStickerImageSource(pose.tex) || this.getStickerImageSource(`pose_${pose.id}`) || this.mascotHeads[0];
+      if (mainImg) {
+        const aspect = (mainImg.naturalWidth || mainImg.width || 1) / Math.max(1, mainImg.naturalHeight || mainImg.height || 1);
+        const targetH = 316;
+        const targetW = targetH * aspect;
+        ctx.drawImage(mainImg, (S - targetW) * 0.5, S * 0.52 - targetH * 0.5, targetW, targetH);
+      }
+    }
+    ctx.restore();
+    return this.polaroidCanvas.toDataURL("image/jpeg", 0.86);
+  }
+
+  capturePolaroidSnapshot({ pose, players, isBest = false, combo = 0, roundIndex = 0 }) {
+    if (!pose) return;
+    const vid = this.el.video;
+    const ctx = this.polaroidCtx;
+    const S = 480;
+    let dataUrl = null;
+
+    if (vid && vid.videoWidth > 64 && vid.videoHeight > 64 && !this.settings.devMode && this.tracker.mode === "mediapipe") {
+      try {
+        const vw = vid.videoWidth;
+        const vh = vid.videoHeight;
+
+        // Compute normalized center of player(s) bbox in mirrored viewport coordinates
+        let sumX = 0;
+        let sumY = 0;
+        let count = 0;
+        (players || []).forEach((p) => {
+          [p.head, p.shoulders?.[0], p.shoulders?.[1], p.hips?.[0], p.hips?.[1]].forEach((pt) => {
+            if (pt && (pt.smoothConf ?? pt.v ?? 1) > 0.2) {
+              sumX += pt.x;
+              sumY += pt.y;
+              count++;
+            }
+          });
+        });
+        const normCx = count > 0 ? Math.max(0.22, Math.min(0.78, sumX / count)) : 0.5;
+        const normCy = count > 0 ? Math.max(0.24, Math.min(0.72, sumY / count)) : 0.48;
+
+        // Convert mirrored normCx back to raw video X (unmirrored)
+        const rawCx = (1 - normCx) * vw;
+        const rawCy = normCy * vh;
+        const cropSize = Math.min(vw, vh) * 0.92;
+        const sx = Math.max(0, Math.min(vw - cropSize, rawCx - cropSize * 0.5));
+        const sy = Math.max(0, Math.min(vh - cropSize, rawCy - cropSize * 0.5));
+
+        ctx.save();
+        ctx.clearRect(0, 0, S, S);
+        // Mirror horizontally to match selfie AR view!
+        ctx.translate(S, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(vid, sx, sy, cropSize, cropSize, 0, 0, S, S);
+        ctx.restore();
+        dataUrl = this.polaroidCanvas.toDataURL("image/jpeg", 0.82);
+      } catch {
+        dataUrl = null;
+      }
+    }
+
+    if (!dataUrl) {
+      dataUrl = this.buildStylizedPolaroidDataUrl(pose);
+    }
+
+    const cut = {
+      dataUrl,
+      poseId: pose.id,
+      stickerTex: pose.stickerTex || pose.tex || "animal_giraffe",
+      caption: pose.caption || pose.title || `${pose.name} 완벽!`,
+      isBest: Boolean(isBest),
+      combo,
+      roundIndex,
+    };
+
+    if (this.polaroidCuts.length < 3) {
+      this.polaroidCuts.push(cut);
+    } else if (cut.isBest) {
+      // Always preserve Best Cut in slot 3 (rightmost tilted card with golden crown!)
+      this.polaroidCuts[2] = cut;
+    } else {
+      this.polaroidCuts[1] = cut;
+    }
+  }
+
+  renderPolaroidClearAlbum(summary) {
+    if (!this.el.polaroidAlbum || !this.el.polaroidGrid) return;
+    const cuts = [...this.polaroidCuts];
+
+    // If player cleared fewer than 3 poses, gracefully fill remaining Polaroids from played deck so album is always lush!
+    const deck = this.engine.animalList || [];
+    for (let i = 0; cuts.length < 3 && i < deck.length; i++) {
+      const p = deck[i];
+      if (cuts.some((c) => c.poseId === p.id)) continue;
+      cuts.push({
+        dataUrl: this.buildStylizedPolaroidDataUrl(p),
+        poseId: p.id,
+        stickerTex: p.stickerTex || p.tex || "animal_giraffe",
+        caption: cuts.length === 2 ? "베스트 컷!" : p.caption || `${p.name} 완벽!`,
+        isBest: cuts.length === 2,
+        combo: 0,
+        roundIndex: i,
+      });
+    }
+
+    // Ensure exactly one Best Cut gets the golden crown (prefer Boss / Co-op / last slot)
+    let bestIdx = cuts.findIndex((c) => c.isBest);
+    if (bestIdx < 0) bestIdx = cuts.length - 1;
+    // Move Best Cut to rightmost slot (index 2) to match Mockup 4 composition!
+    if (cuts.length === 3 && bestIdx !== 2) {
+      const [best] = cuts.splice(bestIdx, 1);
+      cuts.push(best);
+      bestIdx = 2;
+    }
+
+    this.el.polaroidGrid.innerHTML = "";
+    cuts.slice(0, 3).forEach((cut, idx) => {
+      const card = document.createElement("div");
+      card.className = `polaroid-card tilt-${idx}`;
+
+      const tape = document.createElement("div");
+      tape.className = `washi-tape tape-${idx}`;
+      card.appendChild(tape);
+
+      const photoWrap = document.createElement("div");
+      photoWrap.className = "polaroid-photo-wrap";
+      const img = document.createElement("img");
+      img.className = "polaroid-photo";
+      img.src = cut.dataUrl;
+      img.alt = cut.caption;
+      img.draggable = false;
+      photoWrap.appendChild(img);
+      card.appendChild(photoWrap);
+
+      // 3D Clay Pose Sticker overlapping bottom-left corner
+      const sticker = document.createElement("img");
+      sticker.className = "polaroid-sticker";
+      sticker.src = `./assets/${cut.stickerTex}.png`;
+      sticker.alt = "";
+      sticker.draggable = false;
+      sticker.onerror = () => {
+        sticker.src = `./assets/images/${cut.stickerTex}.png`;
+        sticker.onerror = () => (sticker.style.display = "none");
+      };
+      card.appendChild(sticker);
+
+      // Golden 3D Crown on Best Cut!
+      if (idx === bestIdx) {
+        const crown = document.createElement("img");
+        crown.className = "polaroid-crown";
+        crown.src = "./assets/fx_crown_gold.png";
+        crown.alt = "베스트 컷 왕관";
+        crown.draggable = false;
+        crown.onerror = () => {
+          crown.src = "./assets/images/fx_crown_gold.png";
+          crown.onerror = () => (crown.style.display = "none");
+        };
+        card.appendChild(crown);
+      }
+
+      const cap = document.createElement("div");
+      cap.className = "polaroid-caption";
+      cap.textContent = idx === bestIdx ? (cut.caption || "베스트 컷!") : cut.caption;
+      card.appendChild(cap);
+
+      this.el.polaroidGrid.appendChild(card);
+    });
+
+    if (this.el.albumSummary) {
+      this.el.albumSummary.textContent = summary;
+    }
+    this.el.screens.clear.classList.add("has-polaroids");
+    this.el.polaroidAlbum.classList.remove("hidden");
   }
 
   drawCameraBrackets(w, h) {

@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import SwiftUI
 import Vision
 
@@ -24,6 +25,45 @@ final class VisionCameraManager: NSObject, ObservableObject {
     private var publishMode: UIPublishMode = .cursorOnly
     private var lastVisionTime: CFTimeInterval = 0
     private let minVisionInterval: CFTimeInterval = 0.032 // Cap Vision inference cleanly at ~30fps so GPU/Metal & touch stay silky!
+
+    // Phase 4 Polaroid Snapshot: captured ONLY on the 1 single frame requested, strictly on visionQueue!
+    private var pendingSnapshotCenter: CGPoint? = nil
+    private var pendingSnapshotCompletion: ((UIImage?) -> Void)? = nil
+    private lazy var snapshotCIContext = CIContext(options: [.useSoftwareRenderer: false])
+
+    /// Requests a single 1:1 480x480 smart-cropped snapshot centered on `cropCenter` (normalized top-left [0..1]).
+    /// Zero main-thread blocking; falls back to a cute pastel studio card in simulator/dev mode.
+    func captureSmartSnapshot(cropCenter: CGPoint = CGPoint(x: 0.5, y: 0.48), completion: @escaping (UIImage?) -> Void) {
+        if !isUsingCamera {
+            // Dev / Simulator fallback: render a clean 480x480 pastel studio backdrop off the main thread
+            DispatchQueue.global(qos: .userInitiated).async {
+                let sz = CGSize(width: 480, height: 480)
+                let renderer = UIGraphicsImageRenderer(size: sz)
+                let img = renderer.image { ctx in
+                    let cg = ctx.cgContext
+                    let colors = [
+                        UIColor(red: 1.0, green: 0.96, blue: 0.88, alpha: 1.0).cgColor,
+                        UIColor(red: 0.88, green: 0.96, blue: 1.0, alpha: 1.0).cgColor
+                    ] as CFArray
+                    if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
+                        cg.drawLinearGradient(grad, start: .zero, end: CGPoint(x: sz.width, y: sz.height), options: [])
+                    }
+                    if let momo = BundleImage.uiImage(named: "momo") {
+                        momo.draw(in: CGRect(x: 90, y: 76, width: 300, height: 320))
+                    }
+                }
+                DispatchQueue.main.async {
+                    completion(img)
+                }
+            }
+            return
+        }
+
+        poseLock.lock()
+        pendingSnapshotCenter = cropCenter
+        pendingSnapshotCompletion = completion
+        poseLock.unlock()
+    }
 
     func snapshotPlayers() -> [PlayerPose] {
         poseLock.lock()
@@ -150,7 +190,8 @@ final class VisionCameraManager: NSObject, ObservableObject {
     }
 
     private var playerStates: [Int: PlayerTrackerState] = [:]
-    private var expectedPlayers: Int = 2
+    private var expectedPlayers: Int = 2        // Main-thread owned
+    private var visionExpectedPlayers: Int = 2  // visionQueue-owned (eliminates cross-thread race!)
     private var isConfigured = false
     private var desiredCameraRunning = false
     private var viewSize: CGSize = CGSize(width: 852, height: 393)
@@ -178,7 +219,7 @@ final class VisionCameraManager: NSObject, ObservableObject {
     func setExpectedPlayers(_ count: Int) {
         let clamped = max(1, min(2, count))
         visionQueue.async { [weak self] in
-            self?.expectedPlayers = clamped
+            self?.visionExpectedPlayers = clamped
         }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -201,7 +242,7 @@ final class VisionCameraManager: NSObject, ObservableObject {
         let clamped = max(1, min(2, expectedPlayers))
         self.expectedPlayers = clamped
         visionQueue.async { [weak self] in
-            self?.expectedPlayers = clamped
+            self?.visionExpectedPlayers = clamped
             self?.playerStates.removeAll()
         }
 
@@ -445,6 +486,8 @@ final class VisionCameraManager: NSObject, ObservableObject {
 
             if !self.isConfigured {
                 self.session.beginConfiguration()
+                // CRITICAL Phase 0 Fix: prevent AVCaptureSession from hijacking AVAudioSession & breaking AVAudioEngine!
+                self.session.automaticallyConfiguresApplicationAudioSession = false
                 self.session.sessionPreset = .hd1280x720
 
                 if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
@@ -583,6 +626,45 @@ extension VisionCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         lastVisionTime = frameNow
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // Phase 4 Polaroid Smart Snapshot: only runs on the exact 1 frame when requested!
+        poseLock.lock()
+        let snapCenter = pendingSnapshotCenter
+        let snapCompletion = pendingSnapshotCompletion
+        if snapCompletion != nil {
+            pendingSnapshotCenter = nil
+            pendingSnapshotCompletion = nil
+        }
+        poseLock.unlock()
+
+        if let completion = snapCompletion {
+            let center = snapCenter ?? CGPoint(x: 0.5, y: 0.48)
+            let ciImg = CIImage(cvPixelBuffer: pixelBuffer)
+            let ext = ciImg.extent
+            let side = min(ext.width, ext.height)
+            let targetCx = ext.minX + max(0.15, min(0.85, center.x)) * ext.width
+            // CIImage origin is bottom-left while cropCenter is top-left normalized
+            let targetCy = ext.minY + (1.0 - max(0.15, min(0.85, center.y))) * ext.height
+            let cropX = max(ext.minX, min(ext.maxX - side, targetCx - side * 0.5))
+            let cropY = max(ext.minY, min(ext.maxY - side, targetCy - side * 0.5))
+            let cropRect = CGRect(x: cropX, y: cropY, width: side, height: side).integral
+            let cropped = ciImg.cropped(to: cropRect)
+            let scale = 480.0 / max(1.0, cropRect.width)
+            let scaled = cropped
+                .transformed(by: CGAffineTransform(translationX: -cropRect.origin.x, y: -cropRect.origin.y))
+                .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            let outRect = CGRect(x: 0, y: 0, width: 480, height: 480)
+            let uiImg: UIImage?
+            if let cg = snapshotCIContext.createCGImage(scaled, from: outRect) {
+                uiImg = UIImage(cgImage: cg)
+            } else {
+                uiImg = nil
+            }
+            DispatchQueue.main.async {
+                completion(uiImg)
+            }
+        }
+
         let bufW = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
         let bufH = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
         let curViewSize = currentViewSize()
@@ -757,7 +839,7 @@ extension VisionCameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             // Step 1c: Persistent slot assignment (0 = P1 Momo left, 1 = P2 Popo right)
             var assigned: [(slotId: Int, det: RawDetection)] = []
             if !deduped.isEmpty {
-                if expectedPlayers <= 1 {
+                if visionExpectedPlayers <= 1 {
                     var pick = deduped[0]
                     if deduped.count > 1, let prev0 = playerStates[0], now - prev0.lastSeenTime < 0.9 {
                         pick = deduped.min(by: { abs($0.sortX - prev0.lastCenterX) < abs($1.sortX - prev0.lastCenterX) }) ?? deduped[0]

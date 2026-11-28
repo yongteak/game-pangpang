@@ -35,9 +35,60 @@ final class SoundEngine {
         format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
         engine.attach(sfxPlayer)
         engine.connect(sfxPlayer, to: engine.mainMixerNode, format: format)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEngineConfigChange),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
         audioQueue.async {
             self.configureAudioSession()
             self.preloadSfxFiles()
+        }
+    }
+
+    @objc private func handleEngineConfigChange() {
+        audioQueue.async {
+            self.recoverAudioEngine()
+        }
+    }
+
+    @objc private func handleAudioInterruption(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let typeVal = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeVal) else { return }
+        audioQueue.async {
+            if type == .began {
+                self.bgmPlayer?.pause()
+                self.sfxPlayer.stop()
+                if self.engine.isRunning { self.engine.pause() }
+            } else if type == .ended {
+                self.recoverAudioEngine()
+                if self.bgmAllowed {
+                    self.bgmPlayer?.play()
+                }
+            }
+        }
+    }
+
+    private func recoverAudioEngine() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+            sfxPlayer.stop()
+            if engine.isRunning { engine.stop() }
+            engine.prepare()
+            try engine.start()
+            sfxPlayer.play()
+        } catch {
+            // Graceful fallback on simulator or transient route change
         }
     }
 
@@ -94,6 +145,7 @@ final class SoundEngine {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try session.setActive(true)
+            engine.prepare()
             try engine.start()
             sfxPlayer.play()
         } catch {
@@ -102,7 +154,13 @@ final class SoundEngine {
     }
 
     private func ensureRunning() {
-        if !engine.isRunning { try? engine.start() }
+        if !engine.isRunning {
+            let session = AVAudioSession.sharedInstance()
+            try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try? session.setActive(true)
+            engine.prepare()
+            try? engine.start()
+        }
         if !sfxPlayer.isPlaying { sfxPlayer.play() }
     }
 
@@ -208,11 +266,13 @@ final class SoundEngine {
 
             let amp = gain * vol
             let endF = freqEnd ?? freq
-            for i in 0..<Int(frameCount) {
-                let p = Double(i) / Double(max(1, frameCount))
+            let n = Int(frameCount)
+            for i in 0..<n {
+                let p = Double(i) / Double(max(1, n))
                 let t = Double(i) / self.sampleRate
                 let f = freq + (endF - freq) * p
-                let env = Float(min(1.0, p / 0.03) * exp(-4.8 * p))
+                let tailFade: Double = p > 0.92 ? max(0.0, (1.0 - p) / 0.08) : 1.0
+                let env = Float(min(1.0, p / 0.03) * exp(-4.8 * p) * tailFade)
                 let wave = sin(2.0 * .pi * f * t) + 0.22 * sin(2.0 * .pi * f * 2.0 * t) * exp(-8.0 * p)
                 data[i] = Float(wave) * amp * env
             }
@@ -405,6 +465,59 @@ final class SoundEngine {
             audioQueue.asyncAfter(deadline: .now() + delay) {
                 self.playTone(freq: f, duration: d, gain: 0.22)
             }
+        }
+    }
+
+    /// Crisp camera shutter ("찰칵!") synthesized on audioQueue for Polaroid snapshot capture.
+    func playShutter() {
+        let vol = volume
+        guard vol > 0.01 else { return }
+        audioQueue.async {
+            self.ensureRunning()
+            let duration = 0.12
+            let frameCount = AVAudioFrameCount(self.sampleRate * duration)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: self.format, frameCapacity: frameCount) else { return }
+            buffer.frameLength = frameCount
+            guard let data = buffer.floatChannelData?[0] else { return }
+
+            let n = Int(frameCount)
+            var seed: UInt32 = 0x51A7_7E21
+            for i in 0..<n {
+                let t = Double(i) / self.sampleRate
+                // Fast deterministic LCG white noise for mechanical shutter click
+                seed = seed &* 1664525 &+ 1013904223
+                let noise = (Double(seed & 0xFFFF) / 32768.0) - 1.0
+                // Dual click envelope: initial leaf open (0..0.025s) + second crisp snap (0.045..0.09s)
+                let env1 = t < 0.032 ? exp(-t * 140.0) : 0.0
+                let dt2 = t - 0.048
+                let env2 = dt2 >= 0 ? exp(-dt2 * 110.0) : 0.0
+                let clickTone = sin(2.0 * .pi * 2400.0 * t) * 0.35 + sin(2.0 * .pi * 4100.0 * t) * 0.25
+                let sample = (noise * 0.72 + clickTone * 0.28) * (env1 * 0.85 + env2 * 1.0)
+                let tailFade = i > n - 120 ? Double(n - i) / 120.0 : 1.0
+                data[i] = Float(sample * tailFade) * 0.34 * vol
+            }
+            self.sfxPlayer.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
+        }
+    }
+
+    func playCoopFanfare() {
+        let notes: [(Double, Double, Double)] = [
+            (659.25, 0.14, 0.0),
+            (783.99, 0.14, 0.07),
+            (1046.5, 0.18, 0.14),
+            (1318.5, 0.34, 0.22),
+        ]
+        for (f, d, delay) in notes {
+            audioQueue.asyncAfter(deadline: .now() + delay) {
+                self.playTone(freq: f, duration: d, gain: 0.24)
+            }
+        }
+    }
+
+    func playWallPass() {
+        playTone(freq: 440, duration: 0.12, gain: 0.24, freqEnd: 1174.66)
+        audioQueue.asyncAfter(deadline: .now() + 0.08) {
+            self.playTone(freq: 1046.5, duration: 0.26, gain: 0.25, freqEnd: 1567.98)
         }
     }
 }

@@ -347,7 +347,7 @@
          5. 게임 통합 자연 클리어 오버레이 (카메라 속 환호하는 얼굴은 열고 상·하단으로 자연 통합!)
          ================================================================ -->
     <section id="screen-clear" class="screen screen-overlay screen-clear">
-      <div class="clear-ribbon">
+      <div class="clear-ribbon" id="clear-ribbon">
         <div class="clear-mascots">
           <img src="./assets/momo_head.png" alt="모모" />
           <img src="./assets/popo_head.png" alt="포포" />
@@ -359,6 +359,26 @@
         </div>
         <h2 class="clear-title">최고야! 짝짝짝!</h2>
         <p class="clear-sub" id="clear-summary">과일과 거대 수박을 함께 깨뜨렸어요!</p>
+      </div>
+
+      <!-- Phase 4: 찰칵! 오늘의 최고 변신 폴라로이드 클리어 앨범 (포즈 게임 전용) -->
+      <div id="polaroid-album" class="polaroid-album hidden" aria-label="오늘의 변신 폴라로이드 앨범">
+        <div class="album-banner">
+          <img src="./assets/momo_head.png" class="album-momo" alt="모모" draggable="false" />
+          <div class="album-stars" aria-hidden="true">
+            <span class="astar a1">⭐</span>
+            <span class="astar a2">⭐</span>
+            <span class="astar a3">⭐</span>
+          </div>
+          <img src="./assets/popo_head.png" class="album-popo" alt="포포" draggable="false" />
+          <div class="album-ribbon-body">
+            <span class="album-cam-ic">📸</span>
+            <span class="album-ribbon-title">최고야! 오늘의 변신 앨범!</span>
+          </div>
+          <p class="album-sub" id="album-summary"></p>
+        </div>
+
+        <div class="polaroid-grid" id="polaroid-grid"></div>
       </div>
 
       <div class="clear-actions-dock">

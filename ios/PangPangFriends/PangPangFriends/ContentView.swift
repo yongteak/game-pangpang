@@ -33,6 +33,7 @@ struct ContentView: View {
     @State private var calloutVisible = false
     @State private var calloutWorkItem: DispatchWorkItem?
     @State private var clearSummary = ""
+    @State private var poseSnapshots: [PoseSnapshotItem] = []
 
     // SpriteKit scene
     @State private var scene: KidsGameScene = {
@@ -126,9 +127,11 @@ struct ContentView: View {
                         if screen == .clear {
                             ClearOverlayView(
                                 summary: clearSummary,
+                                poseSnapshots: selectedGame == .animal ? poseSnapshots : [],
                                 hoveredGlobalTarget: hoveredGlobalTarget,
                                 onReplay: { startCountdown() },
                                 onOtherGame: {
+                                    poseSnapshots = []
                                     scene.stopGame()
                                     if settings.devMode { camera.stopCamera() }
                                     screen = .select
@@ -456,6 +459,11 @@ struct ContentView: View {
                 screen = .clear
             }
         }
+        scene.onSnapshotsUpdate = { items in
+            DispatchQueue.main.async {
+                poseSnapshots = items
+            }
+        }
     }
 
     private func syncCameraPublishMode() {
@@ -513,6 +521,7 @@ struct ContentView: View {
 
     private func startCountdown() {
         stopReadyLoop()
+        poseSnapshots = []
         countdownToken += 1
         let token = countdownToken
         screen = .countdown
@@ -534,6 +543,7 @@ struct ContentView: View {
             SoundEngine.shared.playCountdown(0)
             SoundEngine.shared.setBgmAllowed(true)
             screen = .inGame
+            scene.isPaused = false
             scene.startGame(type: selectedGame, settings: settings)
         }
     }
@@ -822,35 +832,44 @@ struct InGameHUDView: View {
     }
 }
 
-// MARK: - Clear & Pause Overlays (Open Live-Camera Celebration + Hand & Touch Support!)
+// MARK: - Clear & Pause Overlays (Open Live-Camera Celebration + Phase 4 Polaroid Album + Hand & Touch Support!)
 struct ClearOverlayView: View {
     let summary: String
+    var poseSnapshots: [PoseSnapshotItem] = []
     var hoveredGlobalTarget: String? = nil
     let onReplay: () -> Void
     let onOtherGame: () -> Void
 
     @State private var appeared = false
     @State private var starShow: [Bool] = [false, false, false]
+    @State private var cardShow: [Bool] = [false, false, false]
     @State private var mascotBounce = false
 
+    private let cardAngles: [Double] = [-6.0, 2.0, 7.0]
+    private let tapeColors: [Color] = [
+        Color(red: 1.0, green: 0.68, blue: 0.72),
+        Color(red: 0.56, green: 0.90, blue: 0.62),
+        Color(red: 1.0, green: 0.58, blue: 0.74),
+    ]
+
     var body: some View {
-        VStack {
-            // Top floating translucent victory ribbon (leaves center camera 100% open!)
-            VStack(spacing: 6) {
+        VStack(spacing: poseSnapshots.isEmpty ? 0 : 10) {
+            // Top floating translucent victory ribbon
+            VStack(spacing: poseSnapshots.isEmpty ? 6 : 4) {
                 HStack(spacing: 10) {
-                    BundleImage.swiftUIImage(named: "momo_head").resizable().scaledToFit().frame(width: 54)
+                    BundleImage.swiftUIImage(named: "momo_head").resizable().scaledToFit().frame(width: poseSnapshots.isEmpty ? 54 : 44)
                         .offset(y: mascotBounce ? -6 : 0)
-                    BundleImage.swiftUIImage(named: "popo_head").resizable().scaledToFit().frame(width: 54)
+                    BundleImage.swiftUIImage(named: "popo_head").resizable().scaledToFit().frame(width: poseSnapshots.isEmpty ? 54 : 44)
                         .offset(y: mascotBounce ? 0 : -6)
                 }
-                .offset(y: -30)
-                .padding(.bottom, -30)
+                .offset(y: poseSnapshots.isEmpty ? -30 : -22)
+                .padding(.bottom, poseSnapshots.isEmpty ? -30 : -22)
                 .animation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true), value: mascotBounce)
 
                 HStack(spacing: 6) {
                     ForEach(0..<3, id: \.self) { idx in
                         Image(systemName: "star.fill")
-                            .font(.system(size: 32))
+                            .font(.system(size: poseSnapshots.isEmpty ? 32 : 24))
                             .foregroundStyle(.yellow)
                             .shadow(color: .orange.opacity(0.45), radius: 5, y: 2)
                             .scaleEffect(starShow[idx] ? 1.0 : 0.15)
@@ -858,26 +877,46 @@ struct ClearOverlayView: View {
                             .animation(.spring(response: 0.42, dampingFraction: 0.58), value: starShow[idx])
                     }
                 }
-                Text("최고야! 짝짝짝!")
-                    .font(AppFont.swiftUIFont(size: 32))
+                Text(poseSnapshots.isEmpty ? "최고야! 짝짝짝!" : "📸 최고야! 오늘의 변신 앨범!")
+                    .font(AppFont.swiftUIFont(size: poseSnapshots.isEmpty ? 32 : 26))
                     .foregroundStyle(Color(red: 0.153, green: 0.196, blue: 0.267))
                 Text(summary)
-                    .font(AppFont.swiftUIFont(size: 16))
+                    .font(AppFont.swiftUIFont(size: poseSnapshots.isEmpty ? 16 : 14))
                     .foregroundStyle(Color(red: 0.392, green: 0.443, blue: 0.533))
             }
-            .padding(.horizontal, 34)
-            .padding(.vertical, 14)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-            .background(Color.white.opacity(0.76), in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(Color(red: 1.0, green: 0.839, blue: 0.267), lineWidth: 4))
-            .shadow(color: .black.opacity(0.18), radius: 20, y: 8)
-            .padding(.top, 26)
+            .padding(.horizontal, poseSnapshots.isEmpty ? 34 : 28)
+            .padding(.vertical, poseSnapshots.isEmpty ? 14 : 10)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .background(Color(red: 1.0, green: 0.96, blue: 0.86).opacity(poseSnapshots.isEmpty ? 0.76 : 0.90), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(Color(red: 1.0, green: 0.839, blue: 0.267), lineWidth: 4))
+            .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+            .padding(.top, poseSnapshots.isEmpty ? 26 : 18)
             .scaleEffect(appeared ? 1.0 : 0.82)
             .offset(y: appeared ? 0 : -26)
             .opacity(appeared ? 1.0 : 0.0)
             .animation(.spring(response: 0.55, dampingFraction: 0.72), value: appeared)
 
-            Spacer()
+            if !poseSnapshots.isEmpty {
+                Spacer(minLength: 4)
+                // Phase 4: 3 Tilted Glossy Polaroid Photo Cards (-6° / +2° / +7°) matching Mockup 4!
+                HStack(spacing: 22) {
+                    ForEach(Array(poseSnapshots.prefix(3).enumerated()), id: \.element.id) { idx, item in
+                        PolaroidCardView(
+                            item: item,
+                            tapeColor: tapeColors[idx % tapeColors.count],
+                            angle: cardAngles[idx % cardAngles.count]
+                        )
+                        .scaleEffect(cardShow[idx] ? 1.0 : 0.45)
+                        .offset(y: cardShow[idx] ? 0 : 48)
+                        .opacity(cardShow[idx] ? 1.0 : 0.0)
+                        .animation(.spring(response: 0.52, dampingFraction: 0.68), value: cardShow[idx])
+                    }
+                }
+                .padding(.horizontal, 20)
+                Spacer(minLength: 4)
+            } else {
+                Spacer()
+            }
 
             // Bottom floating action dock (hand hover 1.2s OR instant touch!)
             HStack(spacing: 18) {
@@ -931,7 +970,7 @@ struct ClearOverlayView: View {
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
             .background(.ultraThinMaterial, in: Capsule())
-            .padding(.bottom, 18)
+            .padding(.bottom, 14)
             .offset(y: appeared ? 0 : 40)
             .opacity(appeared ? 1.0 : 0.0)
             .animation(.spring(response: 0.55, dampingFraction: 0.75).delay(0.12), value: appeared)
@@ -943,8 +982,89 @@ struct ClearOverlayView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.16 + Double(i) * 0.16) {
                     starShow[i] = true
                 }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.22 + Double(i) * 0.16) {
+                    cardShow[i] = true
+                }
             }
         }
+    }
+}
+
+private struct PolaroidCardView: View {
+    let item: PoseSnapshotItem
+    let tapeColor: Color
+    let angle: Double
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            VStack(spacing: 6) {
+                ZStack {
+                    if let uiImg = item.image {
+                        Image(uiImage: uiImg)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        LinearGradient(
+                            colors: [
+                                Color(red: 1.0, green: 0.96, blue: 0.88),
+                                Color(red: 0.88, green: 0.96, blue: 1.0),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                        BundleImage.swiftUIImage(named: item.stickerTexName)
+                            .resizable()
+                            .scaledToFit()
+                            .padding(16)
+                    }
+                }
+                .frame(width: 126, height: 112)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                )
+
+                Text(item.caption)
+                    .font(AppFont.swiftUIFont(size: 16))
+                    .foregroundStyle(Color(red: 0.12, green: 0.22, blue: 0.36))
+                    .lineLimit(1)
+            }
+            .padding(.top, 10)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .shadow(color: .black.opacity(0.24), radius: 12, x: 0, y: 6)
+            // Bottom-left 3D Pose Sticker
+            .overlay(alignment: .bottomLeading) {
+                BundleImage.swiftUIImage(named: item.stickerTexName)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 44, height: 44)
+                    .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
+                    .offset(x: -10, y: -14)
+            }
+            // Top-right Golden Crown on Best Cut!
+            .overlay(alignment: .topTrailing) {
+                if item.isBestCut {
+                    BundleImage.swiftUIImage(named: "fx_crown_gold")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 42, height: 38)
+                        .rotationEffect(.degrees(14))
+                        .shadow(color: .orange.opacity(0.45), radius: 5, y: 2)
+                        .offset(x: 12, y: -14)
+                }
+            }
+
+            // Pastel Washi Tape Strip at Top Center
+            RoundedRectangle(cornerRadius: 2)
+                .fill(tapeColor.opacity(0.86))
+                .frame(width: 46, height: 13)
+                .rotationEffect(.degrees(angle > 0 ? -4 : 4))
+                .offset(y: -6)
+        }
+        .rotationEffect(.degrees(angle))
     }
 }
 

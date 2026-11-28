@@ -327,6 +327,63 @@ export class SoundEngine {
     });
   }
 
+  /** Crisp camera shutter ("찰칵!") + soft polaroid sparkle chime */
+  playShutter() {
+    if (this.volume <= 0.01) return;
+    this.ensureContext();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+
+    // 1) Crisp mechanical double-click noise burst (shutter open + close)
+    const clickBurst = (offsetSec, freq, durSec, peakGain) => {
+      const len = Math.max(64, Math.floor(this.ctx.sampleRate * durSec));
+      const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const ch = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        const env = Math.pow(1 - i / len, 2.2);
+        ch[i] = (Math.random() * 2 - 1) * env;
+      }
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const filt = this.ctx.createBiquadFilter();
+      filt.type = "bandpass";
+      filt.frequency.value = freq;
+      filt.Q.value = 1.6;
+      const amp = this.ctx.createGain();
+      amp.gain.setValueAtTime(peakGain * this.volume, now + offsetSec);
+      amp.gain.exponentialRampToValueAtTime(0.0001, now + offsetSec + durSec);
+      src.connect(filt);
+      filt.connect(amp);
+      amp.connect(this.ctx.destination);
+      src.start(now + offsetSec);
+      src.stop(now + offsetSec + durSec + 0.01);
+    };
+
+    clickBurst(0.0, 2400, 0.032, 0.55);
+    clickBurst(0.048, 3600, 0.045, 0.48);
+
+    // 2) Bright magical sparkle ding right after the shutter snap
+    this.tone(1318.5, 0.14, { type: "sine", gain: 0.16, delay: 0.07 });
+    this.tone(1760.0, 0.22, { type: "triangle", gain: 0.15, delay: 0.11 });
+  }
+
+  /** Joyful dual-chime celebration for 2P Co-op Combined Pose Bonus */
+  playCoopSuccess() {
+    if (this.playBuffer("balloon_milestone", { gain: 0.92, rate: 1.08 })) return;
+    const chord = [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98];
+    chord.forEach((f, i) => {
+      this.tone(f, 0.34, { type: "triangle", gain: 0.22, delay: i * 0.045 });
+    });
+  }
+
+  /** Crisp neon-mint whoosh + sparkle chime when passing through the Silhouette Wall */
+  playWallPass() {
+    this.tone(360, 0.14, { type: "sine", gain: 0.22, freqEnd: 980 });
+    [659.25, 880.0, 1174.66, 1567.98].forEach((f, i) => {
+      this.tone(f, 0.26, { type: "triangle", gain: 0.22, delay: 0.04 + i * 0.04 });
+    });
+  }
+
   startBgm(track = "fruit", rate = 1.0) {
     if (!this.bgmAllowed) return;
     const trackKey = BGM_TRACKS[track] ? track : "fruit";

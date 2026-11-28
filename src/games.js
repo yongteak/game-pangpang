@@ -7,6 +7,8 @@
  *  - All 7 Motion Action Mathematical Axioms (doc/motion_game_axioms.md)
  */
 
+import { RIG_CHARACTERS, RIG_PART_KEYS, RIG_PART_SPECS, RIG_PERSONALITY, evaluateTargetPose } from "./danceRig.js";
+
 const SPEED_MULT = {
   slow: 0.78,
   normal: 1.0,
@@ -62,16 +64,71 @@ const BOSS_SCHEDULE = [
   { triggerTime: 72, kind: "watermelon",name: "거대 수박 왕",  hits2p: 45, hits1p: 32, bonus: 25, color: "#FF4D6D", hex: 0x7ef58a },
 ];
 
-// 4번 게임: 동물 흉내 포즈 따라하기 7종 릴레이 (체형 독립 14관절 전신 판정!)
+// 4번 게임: 동물 흉내 포즈 따라하기 확장팩 13종 (기존 7종 + 신규 6종, 체형 독립 14관절 전신 판정!)
 const ANIMAL_POSES = [
-  { id: "giraffe",  tex: "animal_giraffe",  name: "기린",     cue: "두 팔을 머리 위로 쭉!",        shortCue: "기린 만세!",      color: "#FFB703", hex: 0xffb703 },
-  { id: "eagle",    tex: "animal_eagle",    name: "독수리",   cue: "두 팔을 양옆으로 활짝!",       shortCue: "독수리 날개!",    color: "#F97316", hex: 0xf97316 },
-  { id: "crab",     tex: "animal_crab",     name: "꽃게",     cue: "양팔을 꺾어 집게손 쫙!",       shortCue: "꽃게 집게손!",    color: "#EF4444", hex: 0xef4444 },
-  { id: "flamingo", tex: "animal_flamingo", name: "플라밍고", cue: "한 발 들고 균형 잡기!",        shortCue: "한 발 균형!",     color: "#EC4899", hex: 0xec4899 },
-  { id: "frog",     tex: "animal_frog",     name: "개구리",   cue: "바닥으로 쏙 웅크리기!",        shortCue: "웅크리기(스쿼트)", color: "#22C55E", hex: 0x22c55e },
-  { id: "elephant", tex: "animal_elephant", name: "코끼리",   cue: "몸을 옆으로 기울여 흔들기!",   shortCue: "코끼리 흔들기!",  color: "#38BDF8", hex: 0x38bdf8 },
-  { id: "starfish", tex: "animal_starfish", name: "불가사리", cue: "팔·다리 모두 크게 X자로 쫙!",  shortCue: "불가사리 X자!",   color: "#A855F7", hex: 0xa855f7 },
+  // Classic 7
+  { id: "giraffe",  tex: "animal_giraffe",  name: "기린",     title: "기린 만세!",     cue: "두 팔을 머리 위로 쭉!",        shortCue: "기린 만세!",      caption: "기린 완벽!",   color: "#FFB703", hex: 0xffb703, theme: "classic" },
+  { id: "eagle",    tex: "animal_eagle",    name: "독수리",   title: "독수리 날개!",   cue: "두 팔을 양옆으로 활짝!",       shortCue: "독수리 날개!",    caption: "독수리 펄럭!", color: "#F97316", hex: 0xf97316, theme: "classic", actionMotion: true },
+  { id: "crab",     tex: "animal_crab",     name: "꽃게",     title: "꽃게 집게!",     cue: "양팔을 꺾어 집게손 쫙!",       shortCue: "꽃게 집게손!",    caption: "꽃게 찰칵!",   color: "#EF4444", hex: 0xef4444, theme: "classic" },
+  { id: "flamingo", tex: "animal_flamingo", name: "플라밍고", title: "플라밍고 균형!", cue: "한 발 들고 균형 잡기!",        shortCue: "한 발 균형!",     caption: "플라밍고 굿!", color: "#EC4899", hex: 0xec4899, theme: "classic" },
+  { id: "frog",     tex: "animal_frog",     name: "개구리",   title: "개구리 쏙!",     cue: "바닥으로 쏙 웅크리기!",        shortCue: "개구리 쏙!",      caption: "개구리 쏙!",   color: "#22C55E", hex: 0x22c55e, theme: "classic" },
+  { id: "elephant", tex: "animal_elephant", name: "코끼리",   title: "코끼리 흔들!",   cue: "몸을 옆으로 기울여 흔들기!",   shortCue: "코끼리 흔들기!",  caption: "코끼리 최고!", color: "#38BDF8", hex: 0x38bdf8, theme: "classic", actionMotion: true },
+  { id: "starfish", tex: "animal_starfish", name: "불가사리", title: "불가사리 X자!",  cue: "팔·다리 모두 크게 X자로 쫙!",  shortCue: "불가사리 X자!",   caption: "불가사리 짠!", color: "#A855F7", hex: 0xa855f7, theme: "classic" },
+  // New 6 (Phase 1 Expansion)
+  { id: "rabbit",   tex: "animal_rabbit",   name: "토끼",     title: "토끼 쫑긋!",     cue: "머리 위 두 손 귀 쫑긋!",       shortCue: "토끼 귀!",        caption: "토끼 쫑긋!",   color: "#F472B6", hex: 0xf472b6, theme: "new" },
+  { id: "trex",     tex: "animal_trex",     name: "티라노",   title: "티라노 어흥!",   cue: "팔을 접고 웅크려 어흥!",       shortCue: "티라노 어흥!",    caption: "티라노 어흥!", color: "#FF6B4A", hex: 0xff6b4a, theme: "new" },
+  { id: "rocket",   tex: "animal_rocket",   name: "슈퍼 로켓", title: "슈퍼 로켓!",    cue: "한 팔만 하늘로 쭉!",           shortCue: "슈퍼 로켓!",      caption: "로켓 발사!",   color: "#3B82F6", hex: 0x3b82f6, theme: "new" },
+  { id: "robot",    tex: "animal_robot",    name: "로봇",     title: "로봇 삐빅!",     cue: "한 팔 위 90°, 한 팔 아래 90°!", shortCue: "로봇 90°!",      caption: "로봇 완벽!",   color: "#6366F1", hex: 0x6366f1, theme: "new" },
+  { id: "heart",    tex: "animal_heart",    name: "1인 하트", title: "사랑해 하트!",   cue: "두 팔을 머리 위로 둥글게 하트!", shortCue: "머리 위 하트!",  caption: "하트 뿅뿅!",   color: "#EC4899", hex: 0xec4899, theme: "new" },
+  { id: "penguin",  tex: "animal_penguin",  name: "펭귄",     title: "펭귄 뒤뚱!",     cue: "양팔 옆으로 살짝 벌려 뒤뚱!",  shortCue: "펭귄 뒤뚱!",      caption: "펭귄 뒤뚱!",   color: "#0EA5E9", hex: 0x0ea5e9, theme: "new" },
 ];
+
+const POSE_BY_ID = Object.fromEntries(ANIMAL_POSES.map((p) => [p.id, p]));
+
+// Phase 2: 2인 합체 코옵 보너스 포즈 3종 (2P 전용)
+const COOP_POSES = [
+  {
+    id: "coop_heart",
+    tex: "fx_coop_heart",
+    stickerTex: "animal_heart",
+    isCoop: true,
+    name: "거대 하트",
+    title: "💖 2인 합체 보너스! 둘이 함께 큰 하트!",
+    cue: "바깥쪽 팔을 높게 올려 가운데서 하트 완성!",
+    shortCue: "2인 거대 하트!",
+    caption: "베스트 컷!",
+    color: "#FF4D8D",
+    hex: 0xff4d8d,
+  },
+  {
+    id: "coop_seesaw",
+    tex: "fx_coop_heart",
+    stickerTex: "animal_frog",
+    isCoop: true,
+    name: "시소 타기",
+    title: "⚖️ 2인 합체 보너스! 시소 타기!",
+    cue: "한 명은 만세, 한 명은 쏙 웅크리기!",
+    shortCue: "시소 타기!",
+    caption: "시소 완벽!",
+    color: "#F59E0B",
+    hex: 0xf59e0b,
+  },
+  {
+    id: "coop_highfive",
+    tex: "fx_coop_heart",
+    stickerTex: "animal_rocket",
+    isCoop: true,
+    name: "하이파이브 아치",
+    title: "🙌 2인 합체 보너스! 하이파이브 아치!",
+    cue: "둘이 가운데로 손을 높게 모아 터치!",
+    shortCue: "하이파이브 아치!",
+    caption: "합체 성공!",
+    color: "#38BDF8",
+    hex: 0x38bdf8,
+  },
+];
+
+let animalDeckRunCount = 0;
 
 function loadSprite(src) {
   const img = new Image();
@@ -108,6 +165,12 @@ export class MiniGameEngine {
     this.feverActive = false;
     this.combo = 0;
     this.comboTimer = 0;
+    this.rigResetSeq = (this.rigResetSeq || 0) + 1;
+    this.danceBpm = 128;
+    this.freezeRoutineOverride = null;
+    this.jungleSubAction = "run";
+    this.jungleEnergy = 0.5;
+    this.balanceTilt = 0;
 
     this.sprites = {};
     ["strawberry", "apple", "orange", "banana", "grape", "peach", "pineapple", "melon"].forEach((k) => {
@@ -122,12 +185,27 @@ export class MiniGameEngine {
     this.sprites.balloon_beach = loadSprite("./assets/balloon_beach.png");
     this.sprites.balloon_gold = loadSprite("./assets/balloon_gold.png");
     this.sprites.dino = loadSprite("./assets/dino_sprite.png");
+    this.sprites.dino_dance1 = loadSprite("./assets/dino_dance1.png");
+    this.sprites.dino_freeze = loadSprite("./assets/dino_freeze.png");
+    this.sprites.momo_dance1 = loadSprite("./assets/momo_dance1.png");
+    this.sprites.momo_freeze = loadSprite("./assets/momo_freeze.png");
+    this.sprites.popo_dance1 = loadSprite("./assets/popo_dance1.png");
+    this.sprites.popo_freeze = loadSprite("./assets/popo_freeze.png");
+    RIG_CHARACTERS.forEach((ch) => {
+      RIG_PART_KEYS.forEach((part) => {
+        this.sprites[`rig_${ch}_${part}`] = loadSprite(`./assets/rig_${ch}_${part}.png`);
+      });
+    });
     this.sprites.jungle_vine = loadSprite("./assets/jungle_vine.png");
     this.sprites.momo_squat = loadSprite("./assets/momo_squat.png");
     this.sprites.star_3d = loadSprite("./assets/star_3d.png");
     this.sprites.mole_cute = loadSprite("./assets/mole_cute.png");
     this.sprites.mole_gold = loadSprite("./assets/mole_gold.png");
     this.sprites.log_bridge = loadSprite("./assets/log_bridge.png");
+    this.rigResetSeq = 0;
+    this._fallbackPoseBuf = {
+      body: 0, head: 0, armL: 0, armR: 0, legL: 0, legR: 0, hopY: 0, squash: 0, headBob: 0,
+    };
 
     this.reset("fruit", this.settings);
   }
@@ -158,6 +236,12 @@ export class MiniGameEngine {
     this.feverActive = false;
     this.combo = 0;
     this.comboTimer = 0;
+    this.rigResetSeq = (this.rigResetSeq || 0) + 1;
+    this.danceBpm = 128;
+    this.freezeRoutineOverride = null;
+    this.jungleSubAction = "run";
+    this.jungleEnergy = 0.5;
+    this.balanceTilt = 0;
 
     const spd = SPEED_MULT[settings.speed] || 1.0;
 
@@ -218,9 +302,9 @@ export class MiniGameEngine {
       this.hooks.onCallout("네온 클럽 오픈! 신나게 흔들어 춤춰요!!", 2500);
       this.sound.startBgm("freeze", 1.0);
     } else if (gameId === "animal") {
-      this.animalList = ANIMAL_POSES;
+      this.animalList = this.buildAnimalDeck(settings.players === 2);
       this.animalIndex = 0;
-      this.animalCleared = ANIMAL_POSES.map(() => false);
+      this.animalCleared = this.animalList.map(() => false);
       this.animalTimeLimit = 10.0;
       this.animalTimer = this.animalTimeLimit;
       this.animalHold = 0;
@@ -229,8 +313,22 @@ export class MiniGameEngine {
       this.animalGraceTimer = 0;
       this.animalPause = 0;
       this.animalSuccessCount = 0;
-      this.hooks.onProgress(0, ANIMAL_POSES.length);
-      this.hooks.onCallout(`🦒 ${ANIMAL_POSES[0].name}! ${ANIMAL_POSES[0].cue}`, 2800);
+      this.animalCombo = 0;
+      this.animalMaxCombo = 0;
+      this.animalRainbowAura = false;
+      // Phase 2: 2P Co-op state
+      this.coopProximity = 0;
+      this.coopMidpoint = { x: 0.5, y: 0.45 };
+      // Phase 3: Hole in the Wall state (Round 5)
+      this.wallElapsed = 0;
+      this.wallDuration = 7.2;
+      this.wallScale = 0.22;
+      this.wallStage = 1;
+      this.wallMatchAccum = 0;
+      this.wallPassed = false;
+      this.hooks.onProgress(0, this.animalList.length);
+      // Top-center PixiJS header displays the animal name, cue, and progress bar cleanly without DOM callout overlap!
+      this.hooks.onCallout("", 0);
       this.sound.startBgm("balloon", 1.0);
     } else if (gameId === "jungle") {
       this.jungleDuration = 60.0;
@@ -1150,6 +1248,7 @@ export class MiniGameEngine {
     const rawMotion = players.reduce((acc, p) => acc + (p.motion || 0), 0);
     const avgMotion = rawMotion / Math.max(1, players.length);
     this.emaMotion = 0.3 * avgMotion + 0.7 * this.emaMotion;
+    this.danceBpm = 128 * Math.min(1.22, 1.0 + (this.round || 0) * 0.045);
     this.phaseTimer -= dt;
 
     if (this.phase === "dance") {
@@ -1260,16 +1359,57 @@ export class MiniGameEngine {
   }
 
   /* ------------------------------------------------------------------
-   * GAME 4: 동물 흉내 포즈 따라하기 (14관절 전신 체형 정규화 판정 + 7종 릴레이)
+   * GAME 4: 동물 흉내 포즈 따라하기 확장팩 (13종 포즈 + 콤보/스피드업/보스 + 2P 합체 코옵 + 5R 벽 뚫기 + 폴라로이드!)
    * ------------------------------------------------------------------ */
+  buildAnimalDeck(is2P) {
+    const run = animalDeckRunCount++;
+    const classicOpeners = ["giraffe", "frog", "eagle", "crab"];
+    const openerId = classicOpeners[run % classicOpeners.length];
+    const newPool1 = ["rabbit", "penguin"];
+    const new1Id = newPool1[run % newPool1.length];
+    const coopPose = COOP_POSES[run % COOP_POSES.length];
+    const wallTargets = ["starfish", "eagle", "giraffe"];
+    const wallBase = POSE_BY_ID[wallTargets[run % wallTargets.length]] || POSE_BY_ID.starfish;
+    const wallRound = {
+      ...wallBase,
+      isWall: true,
+      wallPoseId: wallBase.id,
+      title: "🧱 벽 뚫기! 모양에 쏙 맞춰요!",
+      caption: `${wallBase.name} 쏙!`,
+    };
+
+    const r1 = { ...POSE_BY_ID[openerId], speedUp: false, isBoss: false };
+    const r2 = { ...POSE_BY_ID[new1Id], speedUp: false, isBoss: false };
+    const r3 = { ...POSE_BY_ID.trex, speedUp: false, isBoss: false };
+    const r4 = is2P
+      ? { ...coopPose, speedUp: false, isBoss: false }
+      : { ...POSE_BY_ID.rocket, speedUp: false, isBoss: false };
+    const r5 = { ...wallRound, speedUp: false, isBoss: false };
+    const r6 = {
+      ...(is2P ? POSE_BY_ID.rocket : POSE_BY_ID.heart),
+      speedUp: true,
+      isBoss: false,
+    };
+    const r7Base = is2P ? POSE_BY_ID.heart : POSE_BY_ID.robot;
+    const r7 = {
+      ...r7Base,
+      speedUp: true,
+      isBoss: true,
+      caption: "베스트 컷!",
+    };
+    return [r1, r2, r3, r4, r5, r6, r7];
+  }
+
   checkSinglePlayerAnimalPose(p, animalId) {
     if (!p) return false;
     const m = p.metrics;
     // 개발자(마우스) 테스트 모드 폴백: 마우스 위치로 포즈 시뮬레이션
     if (!m) {
       const hy = Math.min(p.leftHand.y, p.rightHand.y);
-      if (animalId === "giraffe" || animalId === "starfish") return hy < 0.34;
-      if (animalId === "frog") return hy > 0.66;
+      if (animalId === "giraffe" || animalId === "starfish" || animalId === "rabbit" || animalId === "heart" || animalId === "rocket") {
+        return hy < 0.36;
+      }
+      if (animalId === "frog" || animalId === "trex") return hy > 0.62;
       return hy < 0.56;
     }
 
@@ -1313,9 +1453,208 @@ export class MiniGameEngine {
       }
       case "starfish":
         return (bothAboveShoulder || m.wristSpan > sw * 1.7) && (m.ankleSpan > sw * 1.15 || bothUp);
+      // --- Phase 1 New 6 Poses ---
+      case "rabbit":
+        return (
+          lH.y < headY + th * 0.06 &&
+          rH.y < headY + th * 0.06 &&
+          m.lElbowAngle < 128 &&
+          m.rElbowAngle < 128 &&
+          m.wristSpan < sw * 1.25
+        );
+      case "trex":
+        return (
+          m.lElbowAngle < 118 &&
+          m.rElbowAngle < 118 &&
+          lH.y > shY - th * 0.12 &&
+          lH.y < m.hipY + th * 0.12 &&
+          rH.y > shY - th * 0.12 &&
+          rH.y < m.hipY + th * 0.12 &&
+          (m.isSquatting || headY > 0.48)
+        );
+      case "rocket":
+        return (
+          (lH.y < headY - 0.04 && rH.y > shY - 0.02) ||
+          (rH.y < headY - 0.04 && lH.y > shY - 0.02)
+        );
+      case "robot":
+        return (
+          Math.abs(lH.y - rH.y) > th * 0.50 &&
+          m.lElbowAngle >= 58 &&
+          m.lElbowAngle <= 132 &&
+          m.rElbowAngle >= 58 &&
+          m.rElbowAngle <= 132
+        );
+      case "heart": {
+        const lEl = p.elbows?.[0];
+        const rEl = p.elbows?.[1];
+        const elbowsWide = !lEl || !rEl || (lEl.x < p.head.x + sw * 0.25 && rEl.x > p.head.x - sw * 0.25);
+        return (
+          lH.y < headY + th * 0.12 &&
+          rH.y < headY + th * 0.12 &&
+          m.wristSpan < sw * 0.92 &&
+          elbowsWide
+        );
+      }
+      case "penguin":
+        return (
+          lH.y > m.hipY - 0.14 &&
+          lH.y < m.hipY + 0.18 &&
+          rH.y > m.hipY - 0.14 &&
+          rH.y < m.hipY + 0.18 &&
+          m.wristSpan > sw * 1.20 &&
+          m.wristSpan < sw * 2.05
+        );
       default:
         return bothUp;
     }
+  }
+
+  /** Phase 2: 2P Co-op Combined Pose Detector + Midpoint Hologram Anchor calculation */
+  checkCoopPose(players, coopId) {
+    if (!players || players.length < 2) {
+      this.coopProximity = 0;
+      this.coopMidpoint = { x: 0.5, y: 0.44 };
+      return false;
+    }
+    const sorted = [...players].sort((a, b) => (a.centerX ?? 0.5) - (b.centerX ?? 0.5));
+    const p1 = sorted[0];
+    const p2 = sorted[1];
+
+    // Pick p1's highest/inner hand and p2's highest/inner hand for midpoint anchor
+    const p1Top = p1.leftHand.y < p1.rightHand.y ? p1.leftHand : p1.rightHand;
+    const p2Top = p2.rightHand.y < p2.leftHand.y ? p2.rightHand : p2.leftHand;
+    const midX = (p1Top.x + p2Top.x) * 0.5;
+    const midY = (p1Top.y + p2Top.y) * 0.5;
+    const topDist = Math.hypot(p1Top.x - p2Top.x, p1Top.y - p2Top.y);
+
+    this.coopMidpoint = {
+      x: Math.max(0.25, Math.min(0.75, midX)),
+      y: Math.max(0.24, Math.min(0.68, midY)),
+    };
+    this.coopProximity = Math.max(0, Math.min(1, 1 - (topDist - 0.08) / 0.42));
+
+    if (coopId === "coop_heart") {
+      const p1Up = p1Top.y < (p1.head?.y ?? 0.4) + 0.08;
+      const p2Up = p2Top.y < (p2.head?.y ?? 0.4) + 0.08;
+      return p1Up && p2Up && topDist < 0.28;
+    }
+    if (coopId === "coop_seesaw") {
+      const p1Sq = Boolean(p1.metrics?.isSquatting);
+      const p2Sq = Boolean(p2.metrics?.isSquatting);
+      return (p1.handsUp && p2Sq) || (p2.handsUp && p1Sq);
+    }
+    if (coopId === "coop_highfive") {
+      const d = Math.hypot(p1.rightHand.x - p2.leftHand.x, p1.rightHand.y - p2.leftHand.y);
+      const sh1 = p1.metrics?.shoulderY ?? 0.46;
+      const sh2 = p2.metrics?.shoulderY ?? 0.46;
+      this.coopMidpoint = {
+        x: (p1.rightHand.x + p2.leftHand.x) * 0.5,
+        y: (p1.rightHand.y + p2.leftHand.y) * 0.5,
+      };
+      this.coopProximity = Math.max(0, Math.min(1, 1 - (d - 0.05) / 0.35));
+      return d < 0.20 && p1.rightHand.y < sh1 + 0.06 && p2.leftHand.y < sh2 + 0.06;
+    }
+    return false;
+  }
+
+  advanceAnimalRound(w, h) {
+    this.animalIndex++;
+    this.hooks.onProgress(this.animalIndex, this.animalList.length);
+
+    if (this.animalIndex >= this.animalList.length) {
+      this.feverActive = false;
+      this.sound.setBgmRate(1.0);
+      this.spawnConfetti(w, 150);
+      this.finishGame(`포즈 ${this.animalList.length}라운드 중 ${this.animalSuccessCount}번 완벽 변신! ⭐ ${this.score}점!`);
+      return;
+    }
+
+    const next = this.animalList[this.animalIndex];
+    this.animalTimeLimit = next.speedUp ? 7.5 : next.isWall ? this.wallDuration : 10.0;
+    this.animalTimer = this.animalTimeLimit;
+    this.animalHold = 0;
+    this.animalHoldTarget = next.isCoop ? 1.6 : next.speedUp ? 1.5 : 1.8;
+    this.animalMatch = false;
+    this.animalGraceTimer = 0;
+    this.animalPause = 0.85;
+    this.wallElapsed = 0;
+    this.wallScale = 0.22;
+    this.wallStage = 1;
+    this.wallMatchAccum = 0;
+    this.wallPassed = false;
+
+    if (next.speedUp) {
+      this.sound.setBgmRate(1.08);
+    } else {
+      this.sound.setBgmRate(1.0);
+    }
+
+    if (next.isCoop) {
+      this.sound.playFeverStart();
+    } else if (next.isWall) {
+      this.sound.playWindWhoosh();
+    } else if (next.isBoss) {
+      this.sound.playBossAppear();
+    } else if (next.speedUp) {
+      this.sound.playFeverStart();
+    }
+    // Always keep DOM callout hidden during Animal Pose rounds so Top-Center PixiJS header / Co-op ribbon / Wall banner NEVER double-stack!
+    this.hooks.onCallout("", 0);
+  }
+
+  completeAnimalRound(cur, cleared, players, w, h) {
+    if (cleared) {
+      this.animalCleared[this.animalIndex] = true;
+      this.animalSuccessCount++;
+      this.animalCombo++;
+      this.animalMaxCombo = Math.max(this.animalMaxCombo || 0, this.animalCombo);
+      this.animalRainbowAura = this.animalCombo >= 3;
+      this.feverActive = this.animalRainbowAura || Boolean(cur.isBoss);
+
+      const basePts = cur.isCoop ? 20 : cur.isWall ? 15 : cur.isBoss ? 20 : 10;
+      const comboBonus = this.animalCombo >= 3 ? 2 : 0;
+      const totalPts = basePts + comboBonus;
+      this.score += totalPts;
+
+      // Phase 4: Camera shutter SFX + Polaroid snapshot capture!
+      this.sound.playShutter();
+      if (cur.isCoop) {
+        this.sound.playCoopSuccess();
+        this.spawnBurst(w * 0.5, h * 0.44, "#FF4D8D", 0xff4d8d, `💖 2인 합체 대성공! +${totalPts}`, 3);
+        this.spawnConfetti(w, 45);
+      } else if (cur.isWall) {
+        this.sound.playWallPass();
+        this.spawnBurst(w * 0.5, h * 0.46, "#22FF88", 0x22ff88, `🧱 쏙! 통과!! +${totalPts}`, 3);
+      } else if (cur.isBoss) {
+        this.sound.playGoldenPop();
+        this.spawnBurst(w * 0.5, h * 0.45, "#FFB703", 0xffd43b, `👑 황금 보스 클리어! +${totalPts}`, 3);
+      } else {
+        this.sound.playGoldenPop();
+        this.spawnBurst(w * 0.5, h * 0.45, cur.color, cur.hex, `${cur.title || cur.name} +${totalPts}`, 2);
+      }
+
+      this.screenFlash = 0.52;
+      this.screenFlashHex = cur.isWall ? 0x22ff88 : 0xffffff;
+
+      this.hooks.onCapturePolaroid?.({
+        pose: cur,
+        players,
+        isBest: Boolean(cur.isBoss || cur.isCoop || cur.isWall || this.animalCombo >= 3),
+        combo: this.animalCombo,
+        roundIndex: this.animalIndex,
+      });
+    } else {
+      this.animalCombo = 0;
+      this.animalRainbowAura = false;
+      this.feverActive = false;
+      this.score += 2;
+      this.sound.playBounce();
+      this.spawnBurst(w * 0.5, h * 0.45, "#94A3B8", 0x94a3b8, "아쉬워요! 다음 포즈 도전! +2", 1);
+    }
+
+    this.hooks.onScore(this.score);
+    this.advanceAnimalRound(w, h);
   }
 
   updateAnimalPose(dt, players, w, h) {
@@ -1323,21 +1662,61 @@ export class MiniGameEngine {
       this.animalPause -= dt;
       return;
     }
-    const cur = ANIMAL_POSES[this.animalIndex];
+    const cur = this.animalList[this.animalIndex];
     if (!cur) return;
 
+    // --- Phase 3: Approaching Silhouette Wall Bonus Round (Round 5) ---
+    if (cur.isWall) {
+      this.wallElapsed += dt;
+      const tNorm = Math.max(0, Math.min(1, this.wallElapsed / this.wallDuration));
+      this.wallScale = 0.22 + 0.98 * Math.pow(tNorm, 2.2);
+      this.wallStage = Math.min(5, Math.floor(tNorm * 5) + 1);
+      this.animalTimer = Math.max(0, this.wallDuration - this.wallElapsed);
+
+      let matchCount = 0;
+      for (const p of players) {
+        if (this.checkSinglePlayerAnimalPose(p, cur.wallPoseId || cur.id)) matchCount++;
+      }
+      this.animalMatch = matchCount > 0;
+      if (this.animalMatch) {
+        this.animalHold = Math.min(this.animalHoldTarget, this.animalHold + dt * (matchCount >= 2 ? 1.35 : 1.0));
+        if (tNorm >= 0.62) {
+          this.wallMatchAccum += dt;
+        }
+      } else {
+        this.animalHold = Math.max(0, this.animalHold - dt * 0.35);
+      }
+
+      if (tNorm >= 0.96 || (tNorm >= 0.78 && this.wallMatchAccum >= 0.45)) {
+        const passed = this.animalMatch || this.wallMatchAccum >= 0.32 || this.animalHold >= this.animalHoldTarget * 0.75;
+        this.wallPassed = passed;
+        this.completeAnimalRound(cur, passed, players, w, h);
+      }
+      return;
+    }
+
+    // --- Phase 1 & Phase 2: Standard / Speed-Up / Boss / 2P Co-op Pose ---
     this.animalTimer = Math.max(0, this.animalTimer - dt);
 
     let matchCount = 0;
-    for (const p of players) {
-      if (this.checkSinglePlayerAnimalPose(p, cur.id)) matchCount++;
+    let actionBoost = 1.0;
+    if (cur.isCoop) {
+      if (this.checkCoopPose(players, cur.id)) matchCount = 2;
+    } else {
+      for (const p of players) {
+        if (this.checkSinglePlayerAnimalPose(p, cur.id)) {
+          matchCount++;
+          if (cur.actionMotion && (p.motion || 0) > 0.025) {
+            actionBoost = 1.25;
+          }
+        }
+      }
     }
     this.animalMatch = matchCount > 0;
 
     if (this.animalMatch) {
-      this.animalGraceTimer = 0.15; // 4-6세 아이의 미세 흔들림에도 0.15초 관대 유예!
-      // 2인 모드에서 둘 다 성공하면 1.35배속 슈퍼 게이지!
-      const boost = matchCount >= 2 ? 1.35 : 1.0;
+      this.animalGraceTimer = 0.16;
+      const boost = (matchCount >= 2 ? 1.35 : 1.0) * actionBoost;
       const prevStep = Math.floor((this.animalHold / this.animalHoldTarget) * 3);
       this.animalHold = Math.min(this.animalHoldTarget, this.animalHold + dt * boost);
       const nextStep = Math.floor((this.animalHold / this.animalHoldTarget) * 3);
@@ -1352,37 +1731,8 @@ export class MiniGameEngine {
 
     const cleared = this.animalHold >= this.animalHoldTarget;
     const timedOut = this.animalTimer <= 0;
-
     if (cleared || timedOut) {
-      if (cleared) {
-        this.animalCleared[this.animalIndex] = true;
-        this.animalSuccessCount++;
-        this.score += 10;
-        this.sound.playGoldenPop();
-        this.screenFlash = 0.36;
-        this.screenFlashHex = cur.hex;
-        this.spawnBurst(w * 0.5, h * 0.45, cur.color, cur.hex, `${cur.name} 완벽 변신! +10`, 2);
-      } else {
-        this.score += 2;
-        this.sound.playBounce();
-        this.spawnBurst(w * 0.5, h * 0.45, "#94A3B8", 0x94a3b8, "아쉬워요! 다음 동물 도전! +2", 1);
-      }
-      this.hooks.onScore(this.score);
-      this.animalIndex++;
-      this.hooks.onProgress(this.animalIndex, ANIMAL_POSES.length);
-
-      if (this.animalIndex >= ANIMAL_POSES.length) {
-        this.spawnConfetti(w, 140);
-        this.finishGame(`동물 7종 중 ${this.animalSuccessCount}마리 완벽 변신! ⭐ ${this.score}점!`);
-      } else {
-        const next = ANIMAL_POSES[this.animalIndex];
-        this.animalTimer = this.animalTimeLimit;
-        this.animalHold = 0;
-        this.animalMatch = false;
-        this.animalGraceTimer = 0;
-        this.animalPause = 0.85;
-        this.hooks.onCallout(`${next.name}! ${next.cue}`, 2800);
-      }
+      this.completeAnimalRound(cur, cleared, players, w, h);
     }
   }
 
@@ -1434,6 +1784,8 @@ export class MiniGameEngine {
     const hMult = HITBOX_MULT[this.settings.speed] || 1.16;
 
     this.jungleElapsed += dt;
+    this.jungleSubAction = this.junglePhase || "run";
+    this.jungleEnergy = this.jungleActiveDetected ? 1.0 : 0.45;
     if (this.jungleElapsed >= this.jungleDuration) {
       this.jungleTrackProgress = 1;
       this.jungleCheckpoints = 5;
@@ -1850,6 +2202,7 @@ export class MiniGameEngine {
     this.bridgeVel += (windTorque + playerTorque + dampingSpring) * dt * 2.1;
     this.bridgeVel *= Math.exp(-3.5 * dt);
     this.bridgeAngle = Math.max(-0.42, Math.min(0.42, this.bridgeAngle + this.bridgeVel * dt));
+    this.balanceTilt = Math.max(-1, Math.min(1, this.bridgeAngle / 0.42));
 
     this.balanceInSafe = Math.abs(this.bridgeAngle) < 0.16;
     this.balanceWobbleCd = Math.max(0, this.balanceWobbleCd - dt);
@@ -1947,6 +2300,71 @@ export class MiniGameEngine {
     }, 1850);
   }
 
+  drawPuppetFallback2D(ctx, charId, x, y, baseSize, mode, subAction, energy, tilt, frozen, wiggling, phaseOffset = 0, rootRot = 0) {
+    const phi = (frozen ? this._lastDancePhi || 0 : this.elapsed * ((this.danceBpm || 128) / 60) * Math.PI * 2) + phaseOffset;
+    if (!frozen) this._lastDancePhi = this.elapsed * ((this.danceBpm || 128) / 60) * Math.PI * 2;
+    const pose = this._fallbackPoseBuf;
+    const personality = RIG_PERSONALITY[charId] || 1.0;
+    evaluateTargetPose(pose, phi, mode, subAction, energy, tilt, this.freezeRoutineOverride ?? null, personality);
+
+    const wiggleRad = frozen && wiggling ? 0.06 * Math.sin(Math.PI * 2 * 32 * this.elapsed) : 0;
+    const wiggleX = frozen && wiggling ? 0.012 * baseSize * Math.sin(Math.PI * 2 * 32 * this.elapsed) : 0;
+    const sy = Math.max(0.74, Math.min(1.30, 1.0 + 0.14 * pose.squash));
+    const sx = 1.0 / sy;
+
+    const pBody = this.sprites[`rig_${charId}_body`];
+    const pHead = this.sprites[`rig_${charId}_head`];
+    const pArmL = this.sprites[`rig_${charId}_arm_l`];
+    const pArmR = this.sprites[`rig_${charId}_arm_r`];
+    const pLegL = this.sprites[`rig_${charId}_leg_l`];
+    const pLegR = this.sprites[`rig_${charId}_leg_r`];
+    const hasAllRigParts = [pBody, pHead, pArmL, pArmR, pLegL, pLegR].every(
+      (img) => img && img.complete && img.naturalWidth > 0
+    );
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rootRot);
+
+    // Dynamic grounded floor shadow ellipse (shrinks on jump, widens on beat-down dip & landing!)
+    const heightFactor = Math.max(0.48, Math.min(1.24, 1.0 - pose.hopY * 2.25));
+    const squashSpread = Math.max(0.88, Math.min(1.16, 1.0 - pose.squash * 0.08));
+    ctx.save();
+    ctx.fillStyle = `rgba(15, 23, 42, ${(0.32 * heightFactor).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.ellipse(wiggleX * 0.5, baseSize * 0.44, baseSize * 0.27 * heightFactor * squashSpread, baseSize * 0.07 * heightFactor, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.translate(wiggleX, -pose.hopY * baseSize);
+    ctx.scale(sx, sy);
+    ctx.rotate(-(pose.body + wiggleRad));
+
+    if (hasAllRigParts) {
+      const drawPart = (img, spec, rotRad, extraOy = 0) => {
+        const dim = spec.size * baseSize;
+        ctx.save();
+        ctx.translate(spec.ox * baseSize, -(spec.oy + extraOy) * baseSize);
+        ctx.rotate(rotRad);
+        ctx.drawImage(img, -spec.ax * dim, -spec.ayPixi * dim, dim, dim);
+        ctx.restore();
+      };
+      drawPart(pLegL, RIG_PART_SPECS.legL, -pose.legL);
+      drawPart(pLegR, RIG_PART_SPECS.legR, -pose.legR);
+      drawPart(pArmL, RIG_PART_SPECS.armL, -(pose.armL + 1.3 * wiggleRad));
+      drawPart(pArmR, RIG_PART_SPECS.armR, -(pose.armR - 1.3 * wiggleRad));
+      drawPart(pBody, RIG_PART_SPECS.body, 0);
+      drawPart(pHead, RIG_PART_SPECS.head, -(pose.head + 1.2 * wiggleRad), pose.headBob);
+    } else {
+      const sp = this.sprites[frozen ? `${charId}_freeze` : `${charId}_dance1`] || this.sprites.dino;
+      if (sp && sp.complete && sp.naturalWidth > 0) {
+        const dim = baseSize * 1.05;
+        ctx.drawImage(sp, -dim * 0.5, -dim * 0.55, dim, dim);
+      }
+    }
+    ctx.restore();
+  }
+
   renderFallback2D(ctx, players, w, h) {
     const hands = this.hands || this.getAllHands(players, w, h);
     ctx.save();
@@ -1971,6 +2389,88 @@ export class MiniGameEngine {
           ctx.drawImage(sp, this.boss.x - br, this.boss.y - br, br * 2, br * 2);
         }
       }
+    } else if (this.gameId === "freeze") {
+      const isFreeze = this.phase === "freeze";
+      const rnd = this.round || 0;
+      const baseR = Math.min(w, h) * 0.165;
+      const lineup =
+        rnd >= 3
+          ? [
+              { id: "momo", nx: 0.24, ny: 0.56, scaleMul: 0.94, phaseOffset: 0.35 },
+              { id: "dino", nx: 0.50, ny: 0.53, scaleMul: 1.04, phaseOffset: 0.0 },
+              { id: "popo", nx: 0.76, ny: 0.56, scaleMul: 0.94, phaseOffset: -0.35 },
+            ]
+          : rnd >= 1
+          ? [
+              { id: "momo", nx: 0.34, ny: 0.55, scaleMul: 0.98, phaseOffset: 0.35 },
+              { id: "dino", nx: 0.66, ny: 0.55, scaleMul: 1.04, phaseOffset: 0.0 },
+            ]
+          : [{ id: "dino", nx: 0.50, ny: 0.53, scaleMul: 1.15, phaseOffset: 0.0 }];
+      lineup.forEach((d) => {
+        this.drawPuppetFallback2D(
+          ctx,
+          d.id,
+          w * d.nx,
+          h * d.ny,
+          baseR * d.scaleMul * 2.15,
+          "dance",
+          "run",
+          this.danceEnergy ?? 0.55,
+          0,
+          isFreeze,
+          Boolean(this.isWiggling),
+          d.phaseOffset,
+          0
+        );
+      });
+    } else if (this.gameId === "jungle") {
+      this.drawPuppetFallback2D(
+        ctx,
+        "momo",
+        w * 0.16,
+        h * 0.56,
+        Math.min(w, h) * 0.30,
+        "jungle",
+        this.jungleSubAction || this.junglePhase || "run",
+        this.jungleEnergy ?? 0.5,
+        0,
+        false,
+        false,
+        0,
+        0
+      );
+    } else if (this.gameId === "balance") {
+      const bridgeCx = w * 0.5;
+      const bridgeCy = h * 0.78;
+      const bridgeW = Math.min(620, w * 0.62);
+      const angle = this.bridgeAngle || 0;
+      const riderSize = Math.min(w, h) * 0.25;
+      const riders =
+        this.settings?.players === 2
+          ? [
+              { id: "momo", offset: -bridgeW * 0.16, phaseOffset: 0.0 },
+              { id: "popo", offset: bridgeW * 0.16, phaseOffset: 0.35 },
+            ]
+          : [{ id: "momo", offset: 0, phaseOffset: 0.0 }];
+      riders.forEach((rd) => {
+        const rx = bridgeCx + Math.cos(angle) * rd.offset + Math.sin(angle) * (riderSize * 0.40);
+        const ry = bridgeCy + Math.sin(angle) * rd.offset - Math.cos(angle) * (riderSize * 0.42);
+        this.drawPuppetFallback2D(
+          ctx,
+          rd.id,
+          rx,
+          ry,
+          riderSize,
+          "balance",
+          "run",
+          this.balanceInSafe ? 0.65 : 0.95,
+          this.balanceTilt || 0,
+          false,
+          false,
+          rd.phaseOffset,
+          angle * 0.65
+        );
+      });
     }
     if (HAND_VFX_GAMES.has(this.gameId)) {
       hands.forEach((hd) => {

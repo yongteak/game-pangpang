@@ -1,6 +1,569 @@
 import SpriteKit
 import SwiftUI
 
+/// In-memory Polaroid snapshot item captured on pose clear (privacy-first: cleared on replay/exit).
+struct PoseSnapshotItem: Identifiable {
+    let id = UUID()
+    let image: UIImage?
+    let stickerTexName: String
+    let caption: String
+    let isBestCut: Bool
+}
+
+// MARK: - Modular 6-Part Dance Puppet Rig & 128 BPM Choreography Engine (Axioms 1-7)
+
+enum DanceRigMode {
+    case dance
+    case balance
+    case jungle
+}
+
+enum DanceRigSubAction {
+    case run
+    case squat
+    case jump
+}
+
+struct DanceRigState {
+    var mode: DanceRigMode = .dance
+    var subAction: DanceRigSubAction = .run
+    var bpm: CGFloat = 128.0
+    var energy: CGFloat = 0.5
+    var tilt: CGFloat = 0.0
+    var frozen: Bool = false
+    var wiggling: Bool = false
+    var routineOverride: Int? = nil
+}
+
+/// Commercial 2D 6-part hierarchical puppet rig (`root -> { floorShadow, pelvis -> { legL, legR, armL, armR, body, head } }`)
+/// implementing 8 expressive commercial Nintendo/Wii dance routines + grounded beat-down bounce + dynamic floor shadow
+/// with zero per-frame heap allocations and graceful single-sprite fallback if any part texture is missing.
+final class DancePuppetRig {
+    static let routineNames: [String] = [
+        "groove_bounce",
+        "disco_point",
+        "cheer_manse",
+        "wave_surf",
+        "happy_clap",
+        "star_jump",
+        "twist_shimmy",
+        "hero_pose",
+    ]
+
+    /// Pre-baked soft radial elliptical floor shadow texture (rendered ONCE, zero per-frame SKShapeNode tessellation).
+    private static let floorShadowTexture: SKTexture = {
+        let sz = CGSize(width: 96, height: 32)
+        let img = UIGraphicsImageRenderer(size: sz).image { ctx in
+            let cg = ctx.cgContext
+            let colors = [
+                UIColor.black.withAlphaComponent(0.55).cgColor,
+                UIColor.black.withAlphaComponent(0.24).cgColor,
+                UIColor.black.withAlphaComponent(0.0).cgColor,
+            ] as CFArray
+            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0.0, 0.58, 1.0]) {
+                cg.saveGState()
+                cg.translateBy(x: sz.width * 0.5, y: sz.height * 0.5)
+                cg.scaleBy(x: 1.0, y: sz.height / sz.width)
+                cg.drawRadialGradient(
+                    grad,
+                    startCenter: .zero,
+                    startRadius: 0,
+                    endCenter: .zero,
+                    endRadius: sz.width * 0.48,
+                    options: []
+                )
+                cg.restoreGState()
+            }
+        }
+        return SKTexture(image: img)
+    }()
+
+    private struct PoseVector {
+        var body: CGFloat = 0
+        var head: CGFloat = 0
+        var armL: CGFloat = 0
+        var armR: CGFloat = 0
+        var legL: CGFloat = 0
+        var legR: CGFloat = 0
+        var hopY: CGFloat = 0
+        var squash: CGFloat = 0
+        var headBob: CGFloat = 0
+    }
+
+    private struct PersonalityProfile {
+        let hopMul: CGFloat
+        let squashMul: CGFloat
+        let armMul: CGFloat
+        let headMul: CGFloat
+        let routineOffset: Int
+    }
+
+    let root = SKNode()
+    private let pelvis = SKNode()
+    private let floorShadow: SKSpriteNode
+
+    private var bodySprite: SKSpriteNode?
+    private var headSprite: SKSpriteNode?
+    private var armLSprite: SKSpriteNode?
+    private var armRSprite: SKSpriteNode?
+    private var legLSprite: SKSpriteNode?
+    private var legRSprite: SKSpriteNode?
+    private var fallbackSprite: SKSpriteNode?
+    private(set) var fallbackMode: Bool = false
+
+    private let characterId: String
+    private let personality: PersonalityProfile
+    private var baseSize: CGFloat
+    private var phi: CGFloat
+    private var wiggleTime: CGFloat = 0
+    private var wasFrozen: Bool = false
+    private var currentPose = PoseVector()
+    private var targetPose = PoseVector()
+    private var frozenPose = PoseVector()
+    private var currentSquashK: CGFloat = 0.14
+    private var frozenSquashK: CGFloat = 0.14
+
+    init(
+        characterId: String,
+        baseSize: CGFloat,
+        phaseOffset: CGFloat = 0,
+        textures: [String: SKTexture],
+        fallbackTexture: SKTexture?
+    ) {
+        self.characterId = characterId
+        switch characterId {
+        case "dino":
+            self.personality = PersonalityProfile(hopMul: 1.08, squashMul: 1.08, armMul: 1.00, headMul: 0.96, routineOffset: 0)
+        case "momo":
+            self.personality = PersonalityProfile(hopMul: 1.02, squashMul: 1.00, armMul: 1.10, headMul: 1.08, routineOffset: 0)
+        case "popo":
+            self.personality = PersonalityProfile(hopMul: 1.05, squashMul: 1.04, armMul: 1.05, headMul: 1.12, routineOffset: 0)
+        default:
+            self.personality = PersonalityProfile(hopMul: 1.00, squashMul: 1.00, armMul: 1.00, headMul: 1.00, routineOffset: 0)
+        }
+        self.baseSize = max(16, baseSize)
+        self.phi = phaseOffset
+
+        // Grounded dynamic floor shadow directly on root (stays planted on floor during jumps!)
+        let shadow = SKSpriteNode(texture: Self.floorShadowTexture)
+        shadow.zPosition = -5
+        shadow.alpha = 0.34
+        root.addChild(shadow)
+        self.floorShadow = shadow
+
+        root.addChild(pelvis)
+
+        let bodyTex = textures["rig_\(characterId)_body"]
+        let headTex = textures["rig_\(characterId)_head"]
+        let armLTex = textures["rig_\(characterId)_arm_l"]
+        let armRTex = textures["rig_\(characterId)_arm_r"]
+        let legLTex = textures["rig_\(characterId)_leg_l"]
+        let legRTex = textures["rig_\(characterId)_leg_r"]
+
+        if let bodyTex, let headTex, let armLTex, let armRTex, let legLTex, let legRTex {
+            fallbackMode = false
+
+            // Deepened joint anchors & tuck so limbs NEVER detach at extreme angles (Y-up SpriteKit)
+            let legL = SKSpriteNode(texture: legLTex)
+            legL.anchorPoint = CGPoint(x: 0.50, y: 0.84)
+            legL.zPosition = -2
+            pelvis.addChild(legL)
+            legLSprite = legL
+
+            let legR = SKSpriteNode(texture: legRTex)
+            legR.anchorPoint = CGPoint(x: 0.50, y: 0.84)
+            legR.zPosition = -2
+            pelvis.addChild(legR)
+            legRSprite = legR
+
+            let armL = SKSpriteNode(texture: armLTex)
+            armL.anchorPoint = CGPoint(x: 0.68, y: 0.78)
+            armL.zPosition = -1
+            pelvis.addChild(armL)
+            armLSprite = armL
+
+            let armR = SKSpriteNode(texture: armRTex)
+            armR.anchorPoint = CGPoint(x: 0.32, y: 0.78)
+            armR.zPosition = -1
+            pelvis.addChild(armR)
+            armRSprite = armR
+
+            let body = SKSpriteNode(texture: bodyTex)
+            body.anchorPoint = CGPoint(x: 0.50, y: 0.45)
+            body.zPosition = 0
+            pelvis.addChild(body)
+            bodySprite = body
+
+            let head = SKSpriteNode(texture: headTex)
+            head.anchorPoint = CGPoint(x: 0.50, y: 0.16)
+            head.zPosition = 1
+            pelvis.addChild(head)
+            headSprite = head
+        } else {
+            fallbackMode = true
+            let fb = SKSpriteNode(texture: fallbackTexture)
+            fb.anchorPoint = CGPoint(x: 0.50, y: 0.50)
+            fb.zPosition = 0
+            pelvis.addChild(fb)
+            fallbackSprite = fb
+        }
+
+        applyLayout()
+    }
+
+    func setBaseSize(_ newSize: CGFloat) {
+        let clamped = max(16, newSize)
+        guard abs(clamped - baseSize) > 0.5 else { return }
+        baseSize = clamped
+        applyLayout()
+    }
+
+    func resetPhase(_ offset: CGFloat = 0) {
+        phi = offset
+        wiggleTime = 0
+        wasFrozen = false
+        currentPose = PoseVector()
+        targetPose = PoseVector()
+        frozenPose = PoseVector()
+        currentSquashK = 0.14
+        frozenSquashK = 0.14
+    }
+
+    private func applyLayout() {
+        let s = baseSize
+        floorShadow.size = CGSize(width: 0.58 * s, height: 0.17 * s)
+        floorShadow.position = CGPoint(x: 0, y: -0.44 * s)
+
+        if fallbackMode {
+            fallbackSprite?.size = CGSize(width: s, height: s)
+            fallbackSprite?.position = .zero
+            return
+        }
+        bodySprite?.size = CGSize(width: 0.52 * s, height: 0.52 * s)
+        bodySprite?.position = .zero
+
+        headSprite?.size = CGSize(width: 0.62 * s, height: 0.62 * s)
+        headSprite?.position = CGPoint(x: 0, y: 0.25 * s)
+
+        armLSprite?.size = CGSize(width: 0.34 * s, height: 0.34 * s)
+        armLSprite?.position = CGPoint(x: -0.14 * s, y: 0.06 * s)
+
+        armRSprite?.size = CGSize(width: 0.34 * s, height: 0.34 * s)
+        armRSprite?.position = CGPoint(x: 0.14 * s, y: 0.06 * s)
+
+        legLSprite?.size = CGSize(width: 0.32 * s, height: 0.32 * s)
+        legLSprite?.position = CGPoint(x: -0.11 * s, y: -0.20 * s)
+
+        legRSprite?.size = CGSize(width: 0.32 * s, height: 0.32 * s)
+        legRSprite?.position = CGPoint(x: 0.11 * s, y: -0.20 * s)
+    }
+
+    @inline(__always)
+    private func smoothSway(_ phase: CGFloat) -> CGFloat {
+        let u = (sin(phase * 0.5) + 1.0) * 0.5
+        return 2.0 * u * u * (3.0 - 2.0 * u) - 1.0
+    }
+
+    @inline(__always)
+    private func clampVal(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
+        min(hi, max(lo, v))
+    }
+
+    func update(dt: CGFloat, state: DanceRigState) {
+        wiggleTime += dt
+
+        // Axiom 6.2: Instant Freeze-Pose Lock on false -> true transition
+        if state.frozen && !wasFrozen {
+            frozenPose = currentPose
+            frozenSquashK = currentSquashK
+        }
+        wasFrozen = state.frozen
+
+        if !state.frozen {
+            // Axiom 2: Accumulated Beat-Locked Phase Integration
+            phi += dt * (state.bpm / 60.0) * (2.0 * .pi)
+            let phiH = phi - 0.35 // Axiom 4: Phase-lag Δphi = -0.35 rad
+            var targetK: CGFloat = 0.14
+
+            switch state.mode {
+            case .dance:
+                // Axiom 6.1: Real-time energy amplitude modulation [0.65, 1.30]
+                let clampedE = max(0, min(1, state.energy))
+                let amp = 0.65 + 0.65 * clampedE
+                let halfPhi = phi * 0.5
+                let halfPhiH = phiH * 0.5
+                let sinPhi = sin(phi)
+                let cosPhi = cos(phi)
+                let sinHalf = sin(halfPhi)
+                let cosHalf = cos(halfPhi)
+                let sinQuarter = sin(phi * 0.25)
+                let beatPulse = pow(max(0, cosHalf), 4)
+                let downBeat = pow(max(0, -cosPhi), 2) // Grounded beat-down knee dip
+
+                // 8-Routine Commercial Choreography cycling smoothly every 6 beats (12*pi)
+                let routineCount = Self.routineNames.count
+                let routineIdx: Int
+                if let ov = state.routineOverride {
+                    routineIdx = ((ov % routineCount) + routineCount) % routineCount
+                } else {
+                    let cycle = Int(floor(max(0, phi) / (12.0 * .pi))) + personality.routineOffset
+                    routineIdx = ((cycle % routineCount) + routineCount) % routineCount
+                }
+
+                let hopM = personality.hopMul
+                let sqM = personality.squashMul
+                let armM = personality.armMul
+                let headM = personality.headMul
+
+                switch routineIdx {
+                case 0: // groove_bounce — grounded knee-dip bounce + funky alternating arm pump
+                    let absSinHalf = abs(sinHalf)
+                    let bodyNow = 0.11 * smoothSway(phi) * amp
+                    let bodyLag = 0.11 * smoothSway(phiH) * amp
+                    targetPose.hopY = (-0.024 * downBeat + 0.068 * absSinHalf) * amp * hopM
+                    targetPose.squash = ((absSinHalf - 0.55) * 1.15 - 0.28 * downBeat) * amp * sqM
+                    targetPose.body = bodyNow
+                    targetPose.head = (0.16 * sin(halfPhiH) * headM + 0.30 * bodyLag) * amp
+                    targetPose.armL = (-0.42 + 0.62 * sinHalf) * amp * armM
+                    targetPose.armR = (0.42 + 0.62 * sinHalf) * amp * armM
+                    targetPose.legL = 0.24 * sinHalf * amp
+                    targetPose.legR = -0.24 * sinHalf * amp
+                    targetPose.headBob = 0.024 * sin(phiH) * amp
+
+                case 1: // disco_point — iconic alternating diagonal sky-point & hip tuck!
+                    let sideSign: CGFloat = sinQuarter >= 0 ? 1.0 : -1.0
+                    let pointAmt = (0.55 + 0.45 * beatPulse) * amp * armM
+                    let bodyNow = (0.16 * sideSign + 0.06 * sinHalf) * amp
+                    let bodyLag = (0.16 * sideSign + 0.06 * sin(halfPhiH)) * amp
+                    targetPose.hopY = (-0.020 * downBeat + 0.058 * beatPulse) * amp * hopM
+                    targetPose.squash = ((beatPulse - 0.40) * 1.20 - 0.22 * downBeat) * amp * sqM
+                    targetPose.body = bodyNow
+                    targetPose.head = (-0.18 * sideSign * headM + 0.25 * bodyLag) * amp
+                    if sideSign > 0 {
+                        targetPose.armR = 1.42 * pointAmt   // Right arm shoots high to the sky!
+                        targetPose.armL = 0.34 * amp        // Left arm tucks sassily to hip
+                    } else {
+                        targetPose.armL = -1.42 * pointAmt  // Left arm shoots high to the sky!
+                        targetPose.armR = -0.34 * amp       // Right arm tucks sassily to hip
+                    }
+                    targetPose.legL = (0.20 * cosHalf - 0.10 * sideSign) * amp
+                    targetPose.legR = (-0.20 * cosHalf - 0.10 * sideSign) * amp
+                    targetPose.headBob = 0.022 * sin(phiH) * amp
+
+                case 2: // cheer_manse — joyful double-arm overhead 만세 cheer pump!
+                    targetK = 0.16
+                    let pump = 0.5 + 0.5 * sinPhi
+                    let bodyNow = 0.09 * sinHalf * amp
+                    let bodyLag = 0.09 * sin(halfPhiH) * amp
+                    targetPose.hopY = (-0.022 * downBeat + 0.105 * pump) * amp * hopM
+                    targetPose.squash = ((pump - 0.45) * 1.25 - 0.25 * downBeat) * amp * sqM
+                    targetPose.body = bodyNow
+                    targetPose.head = (0.14 * cos(phiH) * headM + 0.28 * bodyLag) * amp
+                    targetPose.armL = (-1.02 - 0.48 * pump) * amp * armM
+                    targetPose.armR = (1.02 + 0.48 * pump) * amp * armM
+                    targetPose.legL = (-0.16 - 0.18 * pump) * amp
+                    targetPose.legR = (0.16 + 0.18 * pump) * amp
+                    targetPose.headBob = 0.026 * sin(phiH) * amp
+
+                case 3: // wave_surf — smooth parallel surfer arm wave + flowing torso lean
+                    let wave = sinHalf
+                    let waveLag = sin(halfPhi - 0.45)
+                    let bodyNow = 0.20 * smoothSway(phi) * amp
+                    let bodyLag = 0.20 * smoothSway(phiH) * amp
+                    targetPose.hopY = (-0.018 * downBeat + 0.048 * abs(cosHalf)) * amp * hopM
+                    targetPose.squash = (0.45 * cosPhi - 0.22 * downBeat) * amp * sqM
+                    targetPose.body = bodyNow
+                    targetPose.head = (-0.16 * wave * headM + 0.32 * bodyLag) * amp
+                    targetPose.armL = (-0.58 + 0.72 * wave) * amp * armM
+                    targetPose.armR = (0.58 + 0.72 * waveLag) * amp * armM
+                    targetPose.legL = (0.22 * wave - 0.08) * amp
+                    targetPose.legR = (-0.22 * wave + 0.08) * amp
+                    targetPose.headBob = 0.020 * sin(phiH) * amp
+
+                case 4: // happy_clap — rhythmic beat-locked chest clap + bouncy shuffle!
+                    let absSinPhi = abs(sinPhi)
+                    let clap = pow(0.5 + 0.5 * sinPhi, 1.5)
+                    let bodyNow = 0.12 * sinHalf * amp
+                    let bodyLag = 0.12 * sin(halfPhiH) * amp
+                    targetPose.hopY = (-0.022 * downBeat + 0.072 * absSinPhi) * amp * hopM
+                    targetPose.squash = ((absSinPhi - 0.50) * 1.05 - 0.24 * downBeat) * amp * sqM
+                    targetPose.body = bodyNow
+                    targetPose.head = (0.16 * cos(phiH) * headM + 0.30 * bodyLag) * amp
+                    targetPose.armL = (0.46 - 1.10 * clap) * amp * armM
+                    targetPose.armR = (-0.46 + 1.10 * clap) * amp * armM
+                    targetPose.legL = 0.30 * sinPhi * amp
+                    targetPose.legR = -0.30 * sinPhi * amp
+                    targetPose.headBob = 0.024 * sin(phiH) * amp
+
+                case 5: // star_jump — anticipation dip + explosive star leap!
+                    targetK = 0.18
+                    let j = pow(max(0, sinHalf), 1.55)
+                    let prep = pow(max(0, -sinHalf), 1.4)
+                    let bodyNow = 0.07 * cosHalf * amp
+                    let bodyLag = 0.07 * cos(halfPhiH) * amp
+                    targetPose.hopY = (-0.042 * prep + 0.175 * j) * amp * hopM
+                    targetPose.squash = (1.55 * j - 0.85 * prep) * amp * sqM
+                    targetPose.body = bodyNow
+                    targetPose.head = (0.12 * sin(phiH) * headM + 0.25 * bodyLag) * amp
+                    targetPose.armL = (-0.26 - 1.16 * j + 0.28 * prep) * amp * armM
+                    targetPose.armR = (0.26 + 1.16 * j - 0.28 * prep) * amp * armM
+                    targetPose.legL = (-0.44 * j + 0.10 * prep) * amp
+                    targetPose.legR = (0.44 * j - 0.10 * prep) * amp
+                    targetPose.headBob = 0.026 * sin(phiH) * amp
+
+                case 6: // twist_shimmy — fast playful 2x-beat twist & shoulder shimmy!
+                    let fast = sin(phi * 2.0)
+                    let bodyNow = 0.15 * fast * amp
+                    let bodyLag = 0.15 * sin(phiH * 2.0) * amp
+                    targetPose.hopY = (-0.020 * downBeat + 0.052 * abs(sinPhi)) * amp * hopM
+                    targetPose.squash = (0.55 * abs(sinPhi) - 0.38) * amp * sqM
+                    targetPose.body = bodyNow
+                    targetPose.head = (-0.20 * fast * headM + 0.25 * bodyLag) * amp
+                    targetPose.armL = (-0.52 + 0.56 * fast) * amp * armM
+                    targetPose.armR = (0.52 + 0.56 * fast) * amp * armM
+                    targetPose.legL = 0.34 * sin(phi * 1.5) * amp
+                    targetPose.legR = -0.34 * sin(phi * 1.5) * amp
+                    targetPose.headBob = 0.018 * sin(phiH * 2.0) * amp
+
+                default: // 7: hero_pose — confident superhero power pose hold with beat-pulse pops!
+                    targetK = 0.16
+                    let heroSign: CGFloat = sinQuarter >= 0 ? 1.0 : -1.0
+                    let pop = 1.0 + 0.18 * beatPulse
+                    let bodyNow = 0.18 * heroSign * pop * amp
+                    targetPose.hopY = (-0.022 * downBeat + 0.075 * beatPulse) * amp * hopM
+                    targetPose.squash = (0.95 * beatPulse - 0.35 * downBeat) * amp * sqM
+                    targetPose.body = bodyNow
+                    targetPose.head = (-0.15 * heroSign * headM + 0.08 * sin(phiH)) * amp
+                    if heroSign > 0 {
+                        targetPose.armL = -1.36 * pop * amp * armM  // Hero fist high!
+                        targetPose.armR = 0.55 * amp * armM         // Opposite arm braced wide
+                    } else {
+                        targetPose.armR = 1.36 * pop * amp * armM
+                        targetPose.armL = -0.55 * amp * armM
+                    }
+                    targetPose.legL = -0.34 * amp
+                    targetPose.legR = 0.34 * amp
+                    targetPose.headBob = 0.020 * beatPulse * amp
+                }
+
+                // Clamp joint angles safely so limbs NEVER invert or look detached even at max energy
+                targetPose.body = clampVal(targetPose.body, -0.30, 0.30)
+                targetPose.head = clampVal(targetPose.head, -0.34, 0.34)
+                targetPose.armL = clampVal(targetPose.armL, -1.62, 0.62)
+                targetPose.armR = clampVal(targetPose.armR, -0.62, 1.62)
+                targetPose.legL = clampVal(targetPose.legL, -0.68, 0.68)
+                targetPose.legR = clampVal(targetPose.legR, -0.68, 0.68)
+
+            case .balance:
+                // Axiom 5.3 Mode A: Log Bridge Balance
+                let tau = max(-1.0, min(1.0, state.tilt))
+                let sinHalf = sin(phi * 0.5)
+                let sinPhi = sin(phi)
+                targetPose.hopY = 0.015 * abs(sinHalf)
+                targetPose.squash = -0.10 * abs(tau)
+                targetPose.body = -0.28 * tau
+                targetPose.head = 0.14 * tau + 0.06 * sin(phiH * 0.5)
+                targetPose.armL = clampVal(-0.55 + 0.55 * tau + 0.12 * sinPhi, -1.55, 0.50)
+                targetPose.armR = clampVal(0.55 + 0.55 * tau - 0.12 * sinPhi, -0.50, 1.55)
+                targetPose.legL = -0.14 + 0.08 * sinHalf
+                targetPose.legR = 0.14 - 0.08 * sinHalf
+                targetPose.headBob = 0.008 * sin(phiH)
+
+            case .jungle:
+                // Axiom 5.3 Mode B: Jungle Adventure (Run / Squat / Jump)
+                switch state.subAction {
+                case .run:
+                    let psi = 1.6 * phi
+                    let sinPsi = sin(psi)
+                    let absSinPsi = abs(sinPsi)
+                    targetPose.hopY = -0.016 + 0.072 * absSinPsi
+                    targetPose.squash = (absSinPsi - 0.50) * 0.72
+                    targetPose.body = -0.14 + 0.05 * sin(2.0 * psi)
+                    targetPose.head = 0.08 + 0.07 * sin(psi - 0.35)
+                    targetPose.armL = 0.72 * sinPsi
+                    targetPose.armR = -0.72 * sinPsi
+                    targetPose.legL = -0.64 * sinPsi
+                    targetPose.legR = 0.64 * sinPsi
+                    targetPose.headBob = 0.018 * sin(psi - 0.35)
+
+                case .squat:
+                    targetK = 0.18
+                    targetPose.hopY = -0.14
+                    targetPose.squash = -1.15
+                    targetPose.body = -0.18
+                    targetPose.head = 0.16
+                    targetPose.armL = -0.42
+                    targetPose.armR = 0.42
+                    targetPose.legL = -0.38
+                    targetPose.legR = 0.38
+                    targetPose.headBob = 0
+
+                case .jump:
+                    targetK = 0.18
+                    targetPose.hopY = 0.15
+                    targetPose.squash = 0.95
+                    targetPose.body = 0.05 * sin(phi)
+                    targetPose.head = -0.06
+                    targetPose.armL = -1.28
+                    targetPose.armR = 1.28
+                    targetPose.legL = -0.40
+                    targetPose.legR = 0.40
+                    targetPose.headBob = 0.012 * sin(phiH)
+                }
+            }
+
+            // Axiom 5.1: Smooth exponential cross-fade blending (alpha = min(1, 8 * dt))
+            let alpha = min(1.0, 8.0 * dt)
+            currentPose.body += (targetPose.body - currentPose.body) * alpha
+            currentPose.head += (targetPose.head - currentPose.head) * alpha
+            currentPose.armL += (targetPose.armL - currentPose.armL) * alpha
+            currentPose.armR += (targetPose.armR - currentPose.armR) * alpha
+            currentPose.legL += (targetPose.legL - currentPose.legL) * alpha
+            currentPose.legR += (targetPose.legR - currentPose.legR) * alpha
+            currentPose.hopY += (targetPose.hopY - currentPose.hopY) * alpha
+            currentPose.squash += (targetPose.squash - currentPose.squash) * alpha
+            currentPose.headBob += (targetPose.headBob - currentPose.headBob) * alpha
+            currentSquashK += (targetK - currentSquashK) * alpha
+        }
+
+        let p = state.frozen ? frozenPose : currentPose
+        let k = state.frozen ? frozenSquashK : currentSquashK
+
+        // Axiom 3: Volume-Preserving Squash & Stretch (sx * sy = 1.0)
+        let sy = max(0.74, min(1.30, 1.0 + k * p.squash))
+        let sx = 1.0 / sy
+        pelvis.xScale = sx
+        pelvis.yScale = sy
+
+        // Axiom 6.3: 32Hz Micro-Tremor when frozen & wiggling
+        let isTremor = state.frozen && state.wiggling
+        let sinWig: CGFloat = isTremor ? sin(2.0 * .pi * 32.0 * wiggleTime) : 0
+        let trem: CGFloat = isTremor ? 0.06 * sinWig : 0
+        let tremorX: CGFloat = isTremor ? 0.012 * baseSize * sinWig : 0
+
+        pelvis.position = CGPoint(x: tremorX, y: p.hopY * baseSize)
+        pelvis.zRotation = p.body + trem
+
+        // Grounded dynamic floor shadow: shrinks when jumping, widens & deepens on landing/squat!
+        let jumpHeight = max(-0.08, p.hopY)
+        let shadowScaleX = clampVal(1.0 - jumpHeight * 2.1 - p.squash * 0.06, 0.48, 1.22)
+        let shadowScaleY = clampVal(1.0 - jumpHeight * 1.7, 0.52, 1.14)
+        floorShadow.position = CGPoint(x: tremorX, y: -0.44 * baseSize)
+        floorShadow.xScale = shadowScaleX
+        floorShadow.yScale = shadowScaleY
+        floorShadow.alpha = clampVal(0.36 - jumpHeight * 1.05, 0.12, 0.44)
+
+        if !fallbackMode {
+            headSprite?.zRotation = p.head + 1.2 * trem
+            headSprite?.position.y = (0.25 + p.headBob) * baseSize
+            armLSprite?.zRotation = p.armL + 1.3 * trem
+            armRSprite?.zRotation = p.armR - 1.3 * trem
+            legLSprite?.zRotation = p.legL
+            legRSprite?.zRotation = p.legR
+        }
+    }
+}
+
 /// Native SpriteKit 60fps GPU game engine:
 /// - 90-second Fruit Ninja Zen Mode + Redi & Ludi 3-Boss Relay (Pineapple -> Melon -> Watermelon King)
 /// - 8 distinct 3D clay fruits launched from ALL 5 directions + gravity + wall bounce + fruit-to-fruit elastic collisions
@@ -15,6 +578,7 @@ final class KidsGameScene: SKScene {
     var onProgress: ((Int, Int) -> Void)?
     var onCallout: ((String, TimeInterval) -> Void)?
     var onFinish: ((String) -> Void)?
+    var onSnapshotsUpdate: (([PoseSnapshotItem]) -> Void)?
 
     private var lastUpdate: TimeInterval = 0
     private var elapsed: TimeInterval = 0
@@ -163,6 +727,55 @@ final class KidsGameScene: SKScene {
         }
         return SKTexture(image: img)
     }()
+    private lazy var balloonStringTex: SKTexture = {
+        let sz = CGSize(width: 36, height: 112)
+        let img = UIGraphicsImageRenderer(size: sz).image { ctx in
+            let cg = ctx.cgContext
+            cg.setStrokeColor(UIColor.white.cgColor)
+            cg.setLineWidth(3.2)
+            cg.setLineCap(.round)
+            cg.move(to: CGPoint(x: sz.width * 0.5, y: 2))
+            cg.addCurve(
+                to: CGPoint(x: sz.width * 0.5 + 4, y: sz.height - 4),
+                control1: CGPoint(x: sz.width * 0.5 + 10, y: sz.height * 0.34),
+                control2: CGPoint(x: sz.width * 0.5 - 10, y: sz.height * 0.68)
+            )
+            cg.strokePath()
+        }
+        return SKTexture(image: img)
+    }()
+    private lazy var headHaloRingTex: SKTexture = {
+        let sz = CGSize(width: 48, height: 48)
+        let img = UIGraphicsImageRenderer(size: sz).image { _ in
+            let ring = UIBezierPath(ovalIn: CGRect(x: 8, y: 8, width: 32, height: 32))
+            ring.lineWidth = 4.5
+            UIColor.white.setStroke()
+            ring.stroke()
+        }
+        return SKTexture(image: img)
+    }()
+    private lazy var softGlowTex: SKTexture = {
+        let sz = CGSize(width: 128, height: 128)
+        let img = UIGraphicsImageRenderer(size: sz).image { ctx in
+            let cg = ctx.cgContext
+            let colors = [
+                UIColor.white.withAlphaComponent(0.95).cgColor,
+                UIColor.white.withAlphaComponent(0.45).cgColor,
+                UIColor.white.withAlphaComponent(0.0).cgColor,
+            ] as CFArray
+            if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0.0, 0.52, 1.0]) {
+                cg.drawRadialGradient(
+                    grad,
+                    startCenter: CGPoint(x: 64, y: 64),
+                    startRadius: 4,
+                    endCenter: CGPoint(x: 64, y: 64),
+                    endRadius: 62,
+                    options: []
+                )
+            }
+        }
+        return SKTexture(image: img)
+    }()
 
     // 90s Zen Fruit state
     private let zenDuration: CGFloat = 90.0
@@ -222,7 +835,7 @@ final class KidsGameScene: SKScene {
     private struct ActiveBalloon {
         let node: SKSpriteNode
         let shadowNode: SKShapeNode
-        let stringNode: SKShapeNode?
+        let stringNode: SKSpriteNode?
         let orbitNode: SKNode?
         let kind: String // balloon_red | balloon_beach | balloon_gold
         var vx: CGFloat
@@ -252,9 +865,7 @@ final class KidsGameScene: SKScene {
     private var wiggleSfxCooldown: CGFloat = 0
     private var isWiggling = false
     private var danceEnergy: CGFloat = 0.5
-    private var dinoNode: SKSpriteNode?
-    private var dinoRing: SKShapeNode?
-    private var dancerNodes: [String: SKSpriteNode] = [:]
+    private var dancerRigs: [String: DancePuppetRig] = [:]
     private var dancerRings: [String: SKShapeNode] = [:]
     private var clubOverlay: SKSpriteNode?
     private var clubBeams: [SKShapeNode] = []
@@ -270,37 +881,65 @@ final class KidsGameScene: SKScene {
     private var freezeMeterBg: SKShapeNode?
     private var freezeMeterFill: SKShapeNode?
 
-    // Game 4: Animal Pose Imitation state
+    // Game 4: Animal Pose Imitation state (Phase 1-4: 13 Poses + Action Combo + 2P Co-op + Hole-in-Wall + Polaroid Snapshots!)
     private struct AnimalPoseSpec {
         let id: String
         let tex: String
         let name: String
         let cue: String
+        let caption: String
         let color: UIColor
+        let isNewPack: Bool
     }
-    private let animalPoses: [AnimalPoseSpec] = [
-        AnimalPoseSpec(id: "giraffe",  tex: "animal_giraffe",  name: "기린",     cue: "두 팔을 머리 위로 쭉!",        color: .systemYellow),
-        AnimalPoseSpec(id: "eagle",    tex: "animal_eagle",    name: "독수리",   cue: "두 팔을 양옆으로 활짝!",       color: .systemOrange),
-        AnimalPoseSpec(id: "crab",     tex: "animal_crab",     name: "꽃게",     cue: "양팔을 꺾어 집게손 쫙!",       color: .systemRed),
-        AnimalPoseSpec(id: "flamingo", tex: "animal_flamingo", name: "플라밍고", cue: "한 발 들고 균형 잡기!",        color: .systemPink),
-        AnimalPoseSpec(id: "frog",     tex: "animal_frog",     name: "개구리",   cue: "바닥으로 쏙 웅크리기!",        color: .systemGreen),
-        AnimalPoseSpec(id: "elephant", tex: "animal_elephant", name: "코끼리",   cue: "몸을 옆으로 기울여 흔들기!",   color: .systemCyan),
-        AnimalPoseSpec(id: "starfish", tex: "animal_starfish", name: "불가사리", cue: "팔·다리 모두 크게 X자로 쫙!",  color: .systemPurple),
+    private struct AnimalRoundItem {
+        let spec: AnimalPoseSpec
+        let isCoop: Bool
+        let isWallRound: Bool
+        let isSpeedUp: Bool
+        let isBossPose: Bool
+        let timeLimit: CGFloat
+    }
+    private let animalPoseCatalog: [AnimalPoseSpec] = [
+        // Classic 7
+        AnimalPoseSpec(id: "giraffe",  tex: "animal_giraffe",  name: "기린",       cue: "두 팔을 머리 위로 쭉!",          caption: "기린 완벽!",     color: .systemYellow, isNewPack: false),
+        AnimalPoseSpec(id: "eagle",    tex: "animal_eagle",    name: "독수리",     cue: "두 팔을 양옆으로 활짝!",         caption: "독수리 활짝!",   color: .systemOrange, isNewPack: false),
+        AnimalPoseSpec(id: "crab",     tex: "animal_crab",     name: "꽃게",       cue: "양팔을 꺾어 집게손 쫙!",         caption: "꽃게 찰칵!",     color: .systemRed,    isNewPack: false),
+        AnimalPoseSpec(id: "flamingo", tex: "animal_flamingo", name: "플라밍고",   cue: "한 발 들고 균형 잡기!",          caption: "균형 최고!",     color: .systemPink,   isNewPack: false),
+        AnimalPoseSpec(id: "frog",     tex: "animal_frog",     name: "개구리",     cue: "바닥으로 쏙 웅크리기!",          caption: "개구리 쏙!",     color: .systemGreen,  isNewPack: false),
+        AnimalPoseSpec(id: "elephant", tex: "animal_elephant", name: "코끼리",     cue: "몸을 옆으로 기울여 흔들기!",     caption: "코끼리 흔들!",   color: .systemCyan,   isNewPack: false),
+        AnimalPoseSpec(id: "starfish", tex: "animal_starfish", name: "불가사리",   cue: "팔·다리 모두 크게 X자로 쫙!",    caption: "불가사리 쫙!",   color: .systemPurple, isNewPack: false),
+        // Phase 1 Expansion 6
+        AnimalPoseSpec(id: "rabbit",   tex: "animal_rabbit",   name: "토끼",       cue: "머리 위 두 손 귀 쫑긋!",         caption: "토끼 쫑긋!",     color: UIColor(red: 1.0, green: 0.56, blue: 0.72, alpha: 1), isNewPack: true),
+        AnimalPoseSpec(id: "trex",     tex: "animal_trex",     name: "티라노 어흥!", cue: "팔을 짧게 접고 웅크려 어흥!",   caption: "티라노 어흥!",   color: UIColor(red: 0.22, green: 0.82, blue: 0.56, alpha: 1), isNewPack: true),
+        AnimalPoseSpec(id: "rocket",   tex: "animal_rocket",   name: "슈퍼 로켓",   cue: "한 팔만 하늘로 쭉!",             caption: "로켓 발사!",     color: UIColor(red: 0.25, green: 0.65, blue: 1.0, alpha: 1),  isNewPack: true),
+        AnimalPoseSpec(id: "robot",    tex: "animal_robot",    name: "로봇",       cue: "한 팔 위 90°, 한 팔 아래 90°!", caption: "로봇 삐빅!",     color: UIColor(red: 0.45, green: 0.56, blue: 1.0, alpha: 1),  isNewPack: true),
+        AnimalPoseSpec(id: "heart",    tex: "animal_heart",    name: "1인 하트",   cue: "두 팔을 머리 위로 둥글게 하트!", caption: "사랑해 하트!",   color: UIColor(red: 1.0, green: 0.42, blue: 0.62, alpha: 1),  isNewPack: true),
+        AnimalPoseSpec(id: "penguin",  tex: "animal_penguin",  name: "펭귄",       cue: "양팔 옆으로 살짝 벌려 뒤뚱!",    caption: "펭귄 뒤뚱!",     color: UIColor(red: 0.32, green: 0.78, blue: 0.98, alpha: 1), isNewPack: true),
     ]
+    private let coopPoseCatalog: [AnimalPoseSpec] = [
+        AnimalPoseSpec(id: "coop_heart",    tex: "fx_coop_heart", name: "거대 하트",      cue: "둘이 함께 큰 하트!",             caption: "베스트 컷!", color: UIColor(red: 1.0, green: 0.40, blue: 0.62, alpha: 1), isNewPack: true),
+        AnimalPoseSpec(id: "coop_seesaw",   tex: "fx_coop_heart", name: "시소 타기",      cue: "한 명은 만세! 한 명은 쏙 웅크려!", caption: "시소 합체!", color: UIColor(red: 1.0, green: 0.62, blue: 0.24, alpha: 1), isNewPack: true),
+        AnimalPoseSpec(id: "coop_highfive", tex: "fx_coop_heart", name: "하이파이브 아치", cue: "둘이 가운데로 손을 높게 터치!",  caption: "하이파이브!", color: UIColor(red: 1.0, green: 0.76, blue: 0.20, alpha: 1), isNewPack: true),
+    ]
+    private var animalRoundDeck: [AnimalRoundItem] = []
     private var animalIndex = 0
     private var animalCleared: [Bool] = []
     private let animalTimeLimit: CGFloat = 10.0
+    private var animalCurTimeLimit: CGFloat = 10.0
     private var animalTimer: CGFloat = 10.0
     private var animalHold: CGFloat = 0
-    private let animalHoldTarget: CGFloat = 1.8
+    private let animalHoldTarget: CGFloat = 1.65
     private var animalPause: CGFloat = 0
     private var animalSuccessCount = 0
+    private var animalCombo = 0
+    private var animalMaxCombo = 0
     private var animalMatchGrace: CGFloat = 0
     private var animalMatchBlend: CGFloat = 0
     private var animalPieFill: SKShapeNode?
     private var animalPieBg: SKShapeNode?
     private var animalGuideNode: SKSpriteNode?
-    private var animalGuideGlow: SKShapeNode?
+    private var animalGuideGlow: SKSpriteNode?
+    private var animalBossCrown: SKSpriteNode?
     private var animalNamePill: SKShapeNode?
     private var animalNameLbl: SKLabelNode?
     private var animalCueBg: SKShapeNode?
@@ -308,21 +947,52 @@ final class KidsGameScene: SKScene {
     private var animalBarBg: SKShapeNode?
     private var animalBarFill: SKShapeNode?
     private var animalBarStar: SKShapeNode?
+    private var animalComboPill: SKShapeNode?
+    private var animalComboLbl: SKLabelNode?
     private var animalSilhouetteRigs: [OrganicSilhouetteRig] = []
     private var animalPoseBadge: CircularMoveBadge?
     private var animalBadgeRings: [SKShapeNode] = []
     private var animalBadgeSprites: [SKSpriteNode] = []
 
-    // Pooled Organic Nintendo Body Silhouette Rig (Zero Wireframe Box, Zero White Dots, Zero Per-Frame Allocations)
+    // Phase 2: 2P Co-op Bonus UI nodes
+    private var coopRibbonBg: SKShapeNode?
+    private var coopRibbonLbl: SKLabelNode?
+    private var coopPctBg: SKShapeNode?
+    private var coopPctFill: SKShapeNode?
+    private var coopPctLbl: SKLabelNode?
+    private var coopHeartNode: SKSpriteNode?
+    private var coopMomoNode: SKSpriteNode?
+    private var coopPopoNode: SKSpriteNode?
+    private var coopSparkleTimer: CGFloat = 0
+    private var lastCoopPctStep: Int = -1
+
+    // Phase 3: Approaching Silhouette Wall Bonus UI nodes
+    private var wallBannerBg: SKShapeNode?
+    private var wallBannerLbl: SKLabelNode?
+    private var wallFrameSprite: SKSpriteNode?
+    private var wallRimGlow: SKShapeNode?
+    private var wallPassed: Bool = false
+
+    // Phase 4: In-memory Polaroid Snapshots (up to 3 best cuts)
+    private struct CapturedCut {
+        let item: PoseSnapshotItem
+        let priority: Int
+    }
+    private var animalCapturedCuts: [CapturedCut] = []
+
+    // Pooled Organic Nintendo Body Silhouette Rig (100% Batched SKSpriteNodes — ZERO Per-Frame SKShapeNode Tessellation!)
     private struct SilhouetteLimb {
-        let glow: SKShapeNode
-        let main: SKShapeNode
+        let glow: SKSpriteNode
+        let main: SKSpriteNode
+        let thickness: CGFloat
     }
     private struct OrganicSilhouetteRig {
         let root: SKNode
         let spine: SilhouetteLimb
-        let shoulderArc: SilhouetteLimb
-        let pelvisArc: SilhouetteLimb
+        let shoulderArcL: SilhouetteLimb
+        let shoulderArcR: SilhouetteLimb
+        let pelvisArcL: SilhouetteLimb
+        let pelvisArcR: SilhouetteLimb
         let lUpperArm: SilhouetteLimb
         let lForearm: SilhouetteLimb
         let rUpperArm: SilhouetteLimb
@@ -331,7 +1001,8 @@ final class KidsGameScene: SKScene {
         let lShin: SilhouetteLimb
         let rThigh: SilhouetteLimb
         let rShin: SilhouetteLimb
-        let headHalo: SilhouetteLimb
+        let headHaloGlow: SKSpriteNode
+        let headHaloMain: SKSpriteNode
     }
 
     // Reusable Creamy Circular Posture/Move Badge (Game 4 & Game 5)
@@ -393,7 +1064,7 @@ final class KidsGameScene: SKScene {
     private var jungleFlagNodes: [SKShapeNode] = []
     private var jungleVineNode: SKSpriteNode?
     private var jungleVineFallback: SKShapeNode?
-    private var jungleMomoSquat: SKSpriteNode?
+    private var jungleMomoRig: DancePuppetRig?
     private var junglePhasePill: SKShapeNode?
     private var junglePhaseLbl: SKLabelNode?
     private var jungleBadges: [JunglePhase: CircularMoveBadge] = [:]
@@ -450,8 +1121,8 @@ final class KidsGameScene: SKScene {
     private var balanceRiverNode: SKShapeNode?
     private var balanceBridgeNode: SKNode?
     private var balanceLogSprite: SKSpriteNode?
-    private var balanceMomo: SKSpriteNode?
-    private var balancePopo: SKSpriteNode?
+    private var balanceMomoRig: DancePuppetRig?
+    private var balancePopoRig: DancePuppetRig?
     private var balanceGaugeBg: SKShapeNode?
     private var balanceGaugeSafe: SKShapeNode?
     private var balanceGaugeNeedle: SKShapeNode?
@@ -475,8 +1146,14 @@ final class KidsGameScene: SKScene {
     override func didMove(to view: SKView) {
         backgroundColor = .clear
         view.allowsTransparency = true
+        view.isPaused = false
+        self.isPaused = false
         scaleMode = .resizeFill
+        ensureSceneGraphSetup()
+        preloadTextures(for: gameType)
+    }
 
+    private func ensureSceneGraphSetup() {
         if worldNode.parent == nil {
             addChild(worldNode)
             worldNode.addChild(splatLayer)
@@ -566,7 +1243,17 @@ final class KidsGameScene: SKScene {
                 trailRigs.append(HandTrailRig(container: trailContainer, bands: bands))
             }
         }
-        preloadTextures(for: gameType)
+    }
+
+    private func rigTextureNames(for charId: String) -> [String] {
+        [
+            "rig_\(charId)_head",
+            "rig_\(charId)_body",
+            "rig_\(charId)_arm_l",
+            "rig_\(charId)_arm_r",
+            "rig_\(charId)_leg_l",
+            "rig_\(charId)_leg_r",
+        ]
     }
 
     private func textureNames(for type: GameType) -> [String] {
@@ -580,50 +1267,101 @@ final class KidsGameScene: SKScene {
         case .balloon:
             return ["balloon_red", "balloon_beach", "balloon_gold"]
         case .freeze:
-            return [
-                "dino_sprite", "dino_dance1", "dino_dance2", "dino_freeze",
-                "momo_dance1", "momo_dance2", "momo_freeze",
-                "popo_dance1", "popo_dance2", "popo_freeze"
-            ]
+            return rigTextureNames(for: "dino")
+                + rigTextureNames(for: "momo")
+                + rigTextureNames(for: "popo")
+                + [
+                    "dino_sprite", "dino_dance1", "dino_dance2", "dino_freeze",
+                    "momo_dance1", "momo_dance2", "momo_freeze",
+                    "popo_dance1", "popo_dance2", "popo_freeze"
+                ]
         case .animal:
             return [
                 "animal_giraffe", "animal_eagle", "animal_crab",
                 "animal_flamingo", "animal_frog", "animal_elephant", "animal_starfish",
+                "animal_rabbit", "animal_trex", "animal_rocket",
+                "animal_robot", "animal_heart", "animal_penguin",
                 "pose_giraffe", "pose_eagle", "pose_crab",
-                "pose_flamingo", "pose_frog", "pose_elephant", "pose_starfish"
+                "pose_flamingo", "pose_frog", "pose_elephant", "pose_starfish",
+                "pose_rabbit", "pose_trex", "pose_rocket",
+                "pose_robot", "pose_heart", "pose_penguin",
+                "fx_coop_heart", "fx_wall_frame", "fx_crown_gold",
+                "momo", "popo", "momo_head", "popo_head"
             ]
         case .jungle:
-            return [
-                "jungle_vine", "momo_squat", "star_3d", "momo", "momo_head",
-                "momo_dance1", "momo_dance2",
-                "pose_run", "pose_squat", "pose_jump"
-            ]
+            return rigTextureNames(for: "momo")
+                + [
+                    "jungle_vine", "momo_squat", "star_3d", "momo", "momo_head",
+                    "momo_dance1", "momo_dance2",
+                    "pose_run", "pose_squat", "pose_jump"
+                ]
         case .mole:
             return ["mole_cute", "mole_gold"]
         case .balance:
-            return [
-                "log_bridge", "star_3d", "momo", "popo",
-                "momo_dance1", "momo_freeze", "popo_dance1", "popo_freeze",
-                "pose_flamingo"
-            ]
+            return rigTextureNames(for: "momo")
+                + rigTextureNames(for: "popo")
+                + [
+                    "log_bridge", "star_3d", "momo", "popo",
+                    "momo_dance1", "momo_freeze", "popo_dance1", "popo_freeze",
+                    "pose_flamingo"
+                ]
         }
     }
 
-    /// Loads ONLY the active game's textures on-demand (already cached in BundleImage -> <15ms!),
-    /// avoiding the 4-second main-thread freeze from decoding all 64 PNGs at once!
+    /// Loads a standard CPU-backed UIImage directly from Bundle (NEVER `preparingForDisplay()` IOSurface-backed images,
+    /// which can fail Metal texture upload and render blank in SpriteKit on real iPhone hardware!).
+    private func loadRawBundleUIImage(named name: String) -> UIImage? {
+        if let path = Bundle.main.path(forResource: name, ofType: "png"),
+           let img = UIImage(contentsOfFile: path) {
+            return img
+        }
+        if let path = Bundle.main.path(forResource: name, ofType: "jpg"),
+           let img = UIImage(contentsOfFile: path) {
+            return img
+        }
+        return UIImage(named: name)
+    }
+
+    /// Loads ONLY the active game's textures on-demand with Metal-safe CPU-backed CGImages.
     private func preloadTextures(for type: GameType) {
         let names = textureNames(for: type)
         for n in names where textures[n] == nil {
-            if let ui = BundleImage.uiImage(named: n) {
+            if let ui = loadRawBundleUIImage(named: n) {
                 textures[n] = SKTexture(image: ui)
             }
         }
     }
 
-    /// Pre-decodes a game's PNGs into BundleImage cache off the main thread during Ready/Countdown
-    /// so entering the game has 0ms disk/decode latency!
+    /// Preloads ONLY the selected game's SKTextures asynchronously onto Metal GPU off the main thread during Ready/Countdown
+    /// so entering the game has 0ms stall AND 100% valid Metal textures on real iPhone!
     func warmUpAssetsInBackground(for type: GameType) {
-        BundleImage.warmUpInBackground(textureNames(for: type))
+        let names = textureNames(for: type)
+        let missing = names.filter { textures[$0] == nil }
+        guard !missing.isEmpty else { return }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var created: [(String, SKTexture)] = []
+            created.reserveCapacity(missing.count)
+            for n in missing {
+                if let path = Bundle.main.path(forResource: n, ofType: "png"),
+                   let img = UIImage(contentsOfFile: path) {
+                    created.append((n, SKTexture(image: img)))
+                } else if let path = Bundle.main.path(forResource: n, ofType: "jpg"),
+                          let img = UIImage(contentsOfFile: path) {
+                    created.append((n, SKTexture(image: img)))
+                }
+            }
+            guard !created.isEmpty else { return }
+            let texList = created.map(\.1)
+            SKTexture.preload(texList) {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    for (name, tex) in created where self.textures[name] == nil {
+                        self.textures[name] = tex
+                    }
+                }
+            }
+        }
     }
 
     func setPausedState(_ paused: Bool) {
@@ -636,6 +1374,9 @@ final class KidsGameScene: SKScene {
         finishWorkItem = nil
         self.gameType = type
         self.settings = settings
+        self.isPaused = false
+        self.view?.isPaused = false
+        ensureSceneGraphSetup()
         preloadTextures(for: type)
 
         gameLayer.removeAllChildren()
@@ -655,9 +1396,7 @@ final class KidsGameScene: SKScene {
         bossBarBg = nil
         bossBarFill = nil
         activeBossConfig = nil
-        dinoNode = nil
-        dinoRing = nil
-        dancerNodes.removeAll()
+        dancerRigs.removeAll()
         dancerRings.removeAll()
         clubOverlay = nil
         clubBeams.removeAll()
@@ -676,6 +1415,7 @@ final class KidsGameScene: SKScene {
         animalPieFill = nil
         animalGuideNode = nil
         animalGuideGlow = nil
+        animalBossCrown = nil
         animalNamePill = nil
         animalNameLbl = nil
         animalCueBg = nil
@@ -683,12 +1423,31 @@ final class KidsGameScene: SKScene {
         animalBarBg = nil
         animalBarFill = nil
         animalBarStar = nil
+        animalComboPill = nil
+        animalComboLbl = nil
         animalSilhouetteRigs.removeAll()
         animalPoseBadge = nil
         animalMatchGrace = 0
         animalMatchBlend = 0
         animalBadgeRings.removeAll()
         animalBadgeSprites.removeAll()
+        coopRibbonBg = nil
+        coopRibbonLbl = nil
+        coopPctBg = nil
+        coopPctFill = nil
+        coopPctLbl = nil
+        coopHeartNode = nil
+        coopMomoNode = nil
+        coopPopoNode = nil
+        coopSparkleTimer = 0
+        lastCoopPctStep = -1
+        wallBannerBg = nil
+        wallBannerLbl = nil
+        wallFrameSprite = nil
+        wallRimGlow = nil
+        wallPassed = false
+        animalCapturedCuts.removeAll()
+        onSnapshotsUpdate?([])
 
         // Reset Game 5 (Jungle)
         jungleTrackBg = nil
@@ -697,7 +1456,7 @@ final class KidsGameScene: SKScene {
         jungleFlagNodes.removeAll()
         jungleVineNode = nil
         jungleVineFallback = nil
-        jungleMomoSquat = nil
+        jungleMomoRig = nil
         junglePhasePill = nil
         junglePhaseLbl = nil
         jungleBadges.removeAll()
@@ -712,8 +1471,8 @@ final class KidsGameScene: SKScene {
         balanceRiverNode = nil
         balanceBridgeNode = nil
         balanceLogSprite = nil
-        balanceMomo = nil
-        balancePopo = nil
+        balanceMomoRig = nil
+        balancePopoRig = nil
         balanceGaugeBg = nil
         balanceGaugeSafe = nil
         balanceGaugeNeedle = nil
@@ -796,15 +1555,21 @@ final class KidsGameScene: SKScene {
             SoundEngine.shared.startBgm(track: "bgm_freeze", rate: 1.0)
 
         case .animal:
+            animalRoundDeck = buildAnimalRoundDeck()
             animalIndex = 0
-            animalCleared = Array(repeating: false, count: animalPoses.count)
-            animalTimer = animalTimeLimit
+            animalCleared = Array(repeating: false, count: animalRoundDeck.count)
+            animalCurTimeLimit = animalRoundDeck.first?.timeLimit ?? animalTimeLimit
+            animalTimer = animalCurTimeLimit
             animalHold = 0
             animalPause = 0
             animalSuccessCount = 0
+            animalCombo = 0
+            animalMaxCombo = 0
+            wallPassed = false
             setupAnimalPoseUI()
-            reportProgress(0, animalPoses.count)
-            onCallout?("🦒 \(animalPoses[0].name)! \(animalPoses[0].cue)", 2.8)
+            reportProgress(0, animalRoundDeck.count)
+            // Keep top-center 100% clear for the Animal Name Pill + Cue + Hold Bar (no overlapping callout pill!)
+            onCallout?("", 0)
             SoundEngine.shared.startBgm(track: "bgm_balloon", rate: 1.0)
 
         case .jungle:
@@ -1225,7 +1990,7 @@ final class KidsGameScene: SKScene {
                             SoundEngine.shared.playPop(combo: combo)
                             spawnBurst(at: pos, color: f.color, text: "팡! +1", power: 1, angle: ang)
                         }
-                        onScore?(score)
+                        reportScore(score)
                         break
                     }
                 }
@@ -1252,7 +2017,7 @@ final class KidsGameScene: SKScene {
                 spawnBurst(at: pos, color: other.color, text: "연쇄 팡!", power: 1, angle: -0.4)
             }
             activeFruits.removeAll()
-            onScore?(score)
+            reportScore(score)
         }
 
         // Active Boss update (Pineapple -> Melon -> Watermelon King)
@@ -1301,7 +2066,7 @@ final class KidsGameScene: SKScene {
 
                         if bossHits >= bossMaxHits {
                             score += cfg.bonus
-                            onScore?(score)
+                            reportScore(score)
                             SoundEngine.shared.playBossSmash()
                             hitstopTimer = 0.2
                             let pos = boss.position
@@ -1669,12 +2434,16 @@ final class KidsGameScene: SKScene {
         shadow.position = CGPoint(x: node.position.x, y: size.height * 0.06)
         splatLayer.addChild(shadow)
 
-        var strNode: SKShapeNode?
+        var strNode: SKSpriteNode?
         if !isBeach {
-            let s = SKShapeNode()
-            s.strokeColor = golden ? UIColor(red: 1.0, green: 0.90, blue: 0.52, alpha: 0.9) : UIColor.white.withAlphaComponent(0.88)
-            s.lineWidth = 3
-            s.lineCap = .round
+            let s = SKSpriteNode(
+                texture: balloonStringTex,
+                color: golden ? UIColor(red: 1.0, green: 0.90, blue: 0.52, alpha: 0.92) : UIColor.white.withAlphaComponent(0.90),
+                size: CGSize(width: r * 0.44, height: r * 1.28)
+            )
+            s.colorBlendFactor = 1.0
+            s.anchorPoint = CGPoint(x: 0.5, y: 1.0)
+            s.zPosition = -1
             gameLayer.addChild(s)
             strNode = s
         }
@@ -1838,16 +2607,11 @@ final class KidsGameScene: SKScene {
             balls[i].shadowNode.alpha = 0.08 + 0.2 * nearFloor
 
             if let sNode = balls[i].stringNode {
-                let knotY = pos.y - r * 1.05
-                let sway = sin(CGFloat(elapsed) * 4.5 + balls[i].driftSeed) * 14 - balls[i].vx * 0.08
-                let p = CGMutablePath()
-                p.move(to: CGPoint(x: pos.x, y: knotY))
-                p.addCurve(
-                    to: CGPoint(x: pos.x + sway * 0.8, y: knotY - r * 1.25),
-                    control1: CGPoint(x: pos.x + sway * 0.4, y: knotY - r * 0.45),
-                    control2: CGPoint(x: pos.x - sway * 0.5, y: knotY - r * 0.85)
-                )
-                sNode.path = p
+                let knotY = pos.y - r * 1.02
+                let swayRad = max(-0.42, min(0.42, sin(CGFloat(elapsed) * 4.5 + balls[i].driftSeed) * 0.16 - balls[i].vx * 0.00075))
+                sNode.position = CGPoint(x: pos.x, y: knotY)
+                sNode.zRotation = swayRad
+                sNode.xScale = 1.0 + 0.12 * sin(CGFloat(elapsed) * 3.8 + balls[i].driftSeed)
             }
 
             // 3) 손 타격 판정 + 오프센터 스핀!
@@ -1866,8 +2630,8 @@ final class KidsGameScene: SKScene {
                         let gained = balls[i].points + comboBonus
                         score += gained
                         registerCombo(at: pos)
-                        onScore?(score)
-                        onProgress?(min(10, (score * 10) / 200), 10)
+                        reportScore(score)
+                        reportProgress(min(10, (score * 10) / 200), 10)
 
                         let fxCol: UIColor = balls[i].golden ? .systemYellow : (isBeach ? .systemTeal : .systemPink)
                         SoundEngine.shared.playBalloonHit(combo: combo, isGolden: balls[i].golden, isBeach: isBeach)
@@ -2103,14 +2867,14 @@ final class KidsGameScene: SKScene {
         gameLayer.addChild(mFill)
         freezeMeterFill = mFill
 
-        // 6) 라운드 합류형 클럽 댄서 3마리 (디노 · 모모 · 포포)
+        // 6) 라운드 합류형 클럽 댄서 3마리 (디노 · 모모 · 포포 — 6-Part DancePuppetRig!)
         let r = min(size.width, size.height) * 0.165
-        let dancerSpecs: [(String, UIColor)] = [
-            ("dino", UIColor(red: 1.0, green: 0.18, blue: 0.58, alpha: 1)),
-            ("momo", UIColor(red: 0.0, green: 0.96, blue: 1.0, alpha: 1)),
-            ("popo", UIColor(red: 1.0, green: 0.90, blue: 0.0, alpha: 1)),
+        let dancerSpecs: [(String, UIColor, CGFloat)] = [
+            ("dino", UIColor(red: 1.0, green: 0.18, blue: 0.58, alpha: 1), 0.00),
+            ("momo", UIColor(red: 0.0, green: 0.96, blue: 1.0, alpha: 1), 0.25),
+            ("popo", UIColor(red: 1.0, green: 0.90, blue: 0.0, alpha: 1), -0.25),
         ]
-        for (id, col) in dancerSpecs {
+        for (id, col, phaseOff) in dancerSpecs {
             let ring = SKShapeNode(circleOfRadius: r * 1.04)
             ring.strokeColor = col
             ring.fillColor = col.withAlphaComponent(0.24)
@@ -2120,14 +2884,17 @@ final class KidsGameScene: SKScene {
             gameLayer.addChild(ring)
             dancerRings[id] = ring
 
-            let sp = SKSpriteNode(texture: textures["\(id)_dance1"] ?? textures["dino_sprite"])
-            sp.size = CGSize(width: r * 2.25, height: r * 2.25)
-            sp.isHidden = (id != "dino")
-            gameLayer.addChild(sp)
-            dancerNodes[id] = sp
+            let rig = DancePuppetRig(
+                characterId: id,
+                baseSize: r * 2.25,
+                phaseOffset: phaseOff,
+                textures: textures,
+                fallbackTexture: textures["\(id)_dance1"] ?? textures[id] ?? textures["dino_sprite"]
+            )
+            rig.root.isHidden = (id != "dino")
+            gameLayer.addChild(rig.root)
+            dancerRigs[id] = rig
         }
-        dinoNode = dancerNodes["dino"]
-        dinoRing = dancerRings["dino"]
     }
 
     private func updateFreeze(dt: CGFloat, players: [PlayerPose]) {
@@ -2309,30 +3076,29 @@ final class KidsGameScene: SKScene {
             ]
         }
 
-        let activeIds = Set(lineup.map { $0.0 })
-        for (id, sp) in dancerNodes {
-            let show = activeIds.contains(id)
-            sp.isHidden = !show
+        for (id, rig) in dancerRigs {
+            let show = lineup.contains(where: { $0.0 == id })
+            rig.root.isHidden = !show
             dancerRings[id]?.isHidden = !show
         }
 
-        let beatIdx = Int(t * beatHz)
+        let currentBpm = 128.0 * rate
         let baseR = min(size.width, size.height) * 0.165
-        for (id, nx, ny, scaleMul, ph, col) in lineup {
-            guard let sp = dancerNodes[id], let ring = dancerRings[id] else { continue }
+        let rigState = DanceRigState(
+            mode: .dance,
+            bpm: currentBpm,
+            energy: danceEnergy,
+            frozen: isFreezePhase,
+            wiggling: isFreezePhase && isWiggling
+        )
+        for (id, nx, ny, scaleMul, _, col) in lineup {
+            guard let rig = dancerRigs[id], let ring = dancerRings[id] else { continue }
             let cx = size.width * nx
             let cy = size.height * ny
             let r = baseR * scaleMul
-            let poseKey = isFreezePhase ? "\(id)_freeze" : ((beatIdx + ph) % 2 == 0 ? "\(id)_dance1" : "\(id)_dance2")
-            if let tex = textures[poseKey], sp.texture !== tex {
-                sp.texture = tex
-            }
-            sp.size = CGSize(width: r * 2.25, height: r * 2.25)
-            sp.position = CGPoint(x: cx, y: cy + (isFreezePhase ? 0 : beatPulse * 18))
-            sp.xScale = isFreezePhase ? 1.0 : (1.0 + 0.07 * beatPulse)
-            sp.yScale = isFreezePhase ? 1.0 : (1.0 - 0.05 * beatPulse + 0.06 * (1.0 - beatPulse))
-            sp.zRotation = isFreezePhase ? 0 : sin(t * beatHz * .pi + CGFloat(ph) * 1.5) * 0.11
-            sp.colorBlendFactor = 0
+            rig.setBaseSize(r * 2.25)
+            rig.root.position = CGPoint(x: cx, y: cy)
+            rig.update(dt: dt, state: rigState)
 
             ring.position = CGPoint(x: cx, y: cy)
             ring.strokeColor = isFreezePhase ? .systemCyan : col
@@ -2385,8 +3151,8 @@ final class KidsGameScene: SKScene {
                     SoundEngine.shared.playDiscoClear()
                     spawnBurst(at: CGPoint(x: size.width * 0.5, y: size.height * 0.50), color: .systemPink, text: "완벽 얼음!! +5", power: 2, angle: 0)
                 }
-                onScore?(score)
-                onProgress?(freezeRound, freezeRoundsTotal)
+                reportScore(score)
+                reportProgress(freezeRound, freezeRoundsTotal)
                 isWiggling = false
 
                 if freezeRound >= freezeRoundsTotal {
@@ -2416,110 +3182,185 @@ final class KidsGameScene: SKScene {
         }
     }
 
-    // MARK: - Game 4: Animal Pose Imitation (14-Joint Full-Body Engine + 7-Animal Relay)
+    // MARK: - Game 4: Animal Pose Imitation (Phase 1-4: 13 Poses + Action Combo + 2P Co-op + Hole-in-Wall + Polaroid Album!)
+    private func buildAnimalRoundDeck() -> [AnimalRoundItem] {
+        let newPack = animalPoseCatalog.filter { $0.isNewPack }.shuffled()
+        let classicPack = animalPoseCatalog.filter { !$0.isNewPack }.shuffled()
+        // Guarantee at least 3 new poses + 3 classic poses for a vibrant 7-round deck!
+        var picks: [AnimalPoseSpec] = Array(newPack.prefix(4)) + Array(classicPack.prefix(3))
+        picks.shuffle()
+
+        var deck: [AnimalRoundItem] = []
+        let wallCandidates = animalPoseCatalog.filter { ["starfish", "eagle", "rabbit", "heart", "giraffe"].contains($0.id) }
+        for roundIdx in 0..<7 {
+            let isSpeedUp = (roundIdx >= 5)
+            let isBossPose = (roundIdx == 6)
+            let isCoop = (settings.players == 2 && roundIdx == 3)
+            let isWall = (roundIdx == 4)
+
+            let spec: AnimalPoseSpec
+            if isCoop {
+                spec = coopPoseCatalog.randomElement() ?? coopPoseCatalog[0]
+            } else if isWall {
+                spec = wallCandidates.randomElement() ?? picks[roundIdx % picks.count]
+            } else {
+                spec = picks[roundIdx % picks.count]
+            }
+
+            let limit: CGFloat = isWall ? 8.2 : (isSpeedUp ? 7.5 : animalTimeLimit)
+            deck.append(AnimalRoundItem(
+                spec: spec,
+                isCoop: isCoop,
+                isWallRound: isWall,
+                isSpeedUp: isSpeedUp,
+                isBossPose: isBossPose,
+                timeLimit: limit
+            ))
+        }
+        return deck
+    }
+
     private func setupAnimalPoseUI() {
+        let firstSpec = animalRoundDeck.first?.spec ?? animalPoseCatalog[0]
+
         // 1) Top-left pie timer
         let pieBg = SKShapeNode(circleOfRadius: 34)
         pieBg.fillColor = .white.withAlphaComponent(0.95)
         pieBg.strokeColor = UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1)
         pieBg.lineWidth = 4.5
+        pieBg.zPosition = 30
         gameLayer.addChild(pieBg)
         animalPieBg = pieBg
 
         let pieFill = SKShapeNode()
         pieFill.fillColor = .systemYellow
         pieFill.strokeColor = .clear
+        pieFill.zPosition = 31
         gameLayer.addChild(pieFill)
         animalPieFill = pieFill
 
-        // 2) Top 7 animal badges
-        for spec in animalPoses {
+        // 2) Top 7 round badges
+        for item in animalRoundDeck {
             let ring = SKShapeNode(circleOfRadius: 19)
             ring.fillColor = .white.withAlphaComponent(0.94)
             ring.strokeColor = UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1)
             ring.lineWidth = 3
+            ring.zPosition = 30
             gameLayer.addChild(ring)
             animalBadgeRings.append(ring)
 
-            let sp = SKSpriteNode(texture: textures[spec.tex])
+            let sp = SKSpriteNode(texture: textures[item.spec.tex])
             sp.size = CGSize(width: 30, height: 30)
+            sp.zPosition = 31
             gameLayer.addChild(sp)
             animalBadgeSprites.append(sp)
         }
 
-        // 3) Right-upper Name Pill + Cue + Hold Progress Bar
-        let pill = SKShapeNode(rectOf: CGSize(width: 156, height: 46), cornerRadius: 23)
-        pill.fillColor = .systemYellow
+        // 3) Top-Center Name Pill + Cue + Hold Progress Bar + Top-Right Live Combo Sticker Badge
+        let pill = SKShapeNode(rectOf: CGSize(width: 184, height: 40), cornerRadius: 20)
+        pill.fillColor = firstSpec.color
         pill.strokeColor = UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1)
-        pill.lineWidth = 4
+        pill.lineWidth = 3.8
+        pill.zPosition = 30
         gameLayer.addChild(pill)
         animalNamePill = pill
 
         let nLbl = SKLabelNode()
         nLbl.verticalAlignmentMode = .center
         nLbl.horizontalAlignmentMode = .center
-        setStickerLabel(nLbl, text: animalPoses[0].name, fontSize: 27, strokeColor: UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1), strokeWidth: 6.5)
+        nLbl.zPosition = 31
+        setStickerLabel(nLbl, text: firstSpec.name, fontSize: 23, strokeColor: UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1), strokeWidth: 6.0)
         gameLayer.addChild(nLbl)
         animalNameLbl = nLbl
 
-        let cBg = SKShapeNode(rectOf: CGSize(width: 266, height: 34), cornerRadius: 17)
-        cBg.fillColor = UIColor(red: 0.08, green: 0.14, blue: 0.24, alpha: 0.72)
-        cBg.strokeColor = UIColor.white.withAlphaComponent(0.42)
+        let cBg = SKShapeNode(rectOf: CGSize(width: 264, height: 28), cornerRadius: 14)
+        cBg.fillColor = UIColor(red: 0.08, green: 0.14, blue: 0.24, alpha: 0.74)
+        cBg.strokeColor = UIColor.white.withAlphaComponent(0.45)
         cBg.lineWidth = 1.8
-        cBg.zPosition = 8
+        cBg.zPosition = 30
         gameLayer.addChild(cBg)
         animalCueBg = cBg
 
         let cLbl = SKLabelNode()
         cLbl.verticalAlignmentMode = .center
         cLbl.horizontalAlignmentMode = .center
-        setStickerLabel(cLbl, text: animalPoses[0].cue, fontSize: 17.5, strokeColor: UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 1), strokeWidth: 5.5)
-        cLbl.zPosition = 9
+        setStickerLabel(cLbl, text: firstSpec.cue, fontSize: 15.5, strokeColor: UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 1), strokeWidth: 5.0)
+        cLbl.zPosition = 31
         gameLayer.addChild(cLbl)
         animalCueLbl = cLbl
 
-        let bBg = SKShapeNode(rectOf: CGSize(width: 210, height: 22), cornerRadius: 11)
+        let bBg = SKShapeNode(rectOf: CGSize(width: 204, height: 18), cornerRadius: 9)
         bBg.fillColor = UIColor.black.withAlphaComponent(0.55)
         bBg.strokeColor = UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1)
-        bBg.lineWidth = 3.5
+        bBg.lineWidth = 3.2
+        bBg.zPosition = 30
         gameLayer.addChild(bBg)
         animalBarBg = bBg
 
         let bFill = SKShapeNode()
         bFill.strokeColor = .clear
+        bFill.zPosition = 31
         gameLayer.addChild(bFill)
         animalBarFill = bFill
 
         // Crisp navy-outlined golden 3D star at right end of progress bar!
-        let star = SKShapeNode(path: makeStarPath(points: 5, outerRadius: 21, innerRadius: 10))
+        let star = SKShapeNode(path: makeStarPath(points: 5, outerRadius: 18, innerRadius: 8.5))
         star.fillColor = UIColor(red: 1.0, green: 0.83, blue: 0.23, alpha: 1) // #FFD43B
         star.strokeColor = UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1) // #1E3A5F
-        star.lineWidth = 3.5
+        star.lineWidth = 3.2
         star.lineJoin = .round
-        star.zPosition = 12
-        let starHighlight = SKShapeNode(path: makeStarPath(points: 5, outerRadius: 10, innerRadius: 5))
+        star.zPosition = 32
+        let starHighlight = SKShapeNode(path: makeStarPath(points: 5, outerRadius: 8.5, innerRadius: 4.2))
         starHighlight.fillColor = UIColor(red: 1.0, green: 0.96, blue: 0.72, alpha: 0.88)
         starHighlight.strokeColor = .clear
-        starHighlight.position = CGPoint(x: -2, y: 2)
+        starHighlight.position = CGPoint(x: -1.8, y: 1.8)
         star.addChild(starHighlight)
         gameLayer.addChild(star)
         animalBarStar = star
 
-        // 4) Right-lower 3D Clay Animal Guide
-        let glow = SKShapeNode(circleOfRadius: 90)
-        glow.fillColor = UIColor.systemGreen.withAlphaComponent(0.32)
-        glow.strokeColor = .clear
+        // Live "🔥 N COMBO!" sticker pill (shown at 2+ combo, top-right directly below score pill)
+        let comboPill = SKShapeNode(rectOf: CGSize(width: 142, height: 34), cornerRadius: 17)
+        comboPill.fillColor = UIColor(red: 1.0, green: 0.45, blue: 0.12, alpha: 0.96)
+        comboPill.strokeColor = UIColor(red: 1.0, green: 0.95, blue: 0.72, alpha: 0.96)
+        comboPill.lineWidth = 3.0
+        comboPill.zPosition = 33
+        comboPill.isHidden = true
+        gameLayer.addChild(comboPill)
+        animalComboPill = comboPill
+
+        let comboLbl = SKLabelNode()
+        comboLbl.verticalAlignmentMode = .center
+        comboLbl.horizontalAlignmentMode = .center
+        comboLbl.zPosition = 34
+        comboLbl.isHidden = true
+        setStickerLabel(comboLbl, text: "🔥 2 COMBO!", fontSize: 17, strokeColor: UIColor(red: 0.45, green: 0.12, blue: 0.02, alpha: 1), strokeWidth: 5.0)
+        gameLayer.addChild(comboLbl)
+        animalComboLbl = comboLbl
+
+        // 4) CENTER-HERO 3D Clay Animal Guide + Soft Radial Halo + Boss Golden Crown
+        let glow = SKSpriteNode(texture: softGlowTex, color: UIColor(red: 1.0, green: 0.95, blue: 0.70, alpha: 1.0), size: CGSize(width: 240, height: 240))
+        glow.colorBlendFactor = 1.0
         glow.blendMode = .add
-        glow.alpha = 0
+        glow.alpha = 0.28
+        glow.zPosition = 17
         gameLayer.addChild(glow)
         animalGuideGlow = glow
 
-        let guide = SKSpriteNode(texture: textures[animalPoses[0].tex])
-        guide.size = CGSize(width: 170, height: 170)
+        let guide = SKSpriteNode(texture: textures[firstSpec.tex])
+        guide.size = CGSize(width: 200, height: 200)
+        guide.alpha = 0.88
+        guide.zPosition = 18
         gameLayer.addChild(guide)
         animalGuideNode = guide
 
-        // 5) Pooled Organic Nintendo-Style Body Silhouette Rigs (Up to 2 Players — Zero Wireframe Box, Zero Blinking!)
+        let crown = SKSpriteNode(texture: textures["fx_crown_gold"])
+        crown.size = CGSize(width: 60, height: 48)
+        crown.zPosition = 29
+        crown.isHidden = true
+        gameLayer.addChild(crown)
+        animalBossCrown = crown
+
+        // 5) Pooled Organic Nintendo-Style Body Silhouette Rigs (Z=20, sandwiched cleanly in front of Wall!)
         animalSilhouetteRigs.removeAll()
         for _ in 0..<2 {
             let rig = makeOrganicSilhouetteRig()
@@ -2528,9 +3369,110 @@ final class KidsGameScene: SKScene {
         }
 
         // Bottom-left warm cream circular posture icon badge (3/4-angled pose_<animal>.png + glowing green progress ring)
-        let poseBadge = makeCircularMoveBadge(iconId: animalPoses[0].id, title: animalPoses[0].name, radius: 42)
+        let poseBadge = makeCircularMoveBadge(iconId: firstSpec.id, title: firstSpec.name, radius: 42)
         gameLayer.addChild(poseBadge.container)
         animalPoseBadge = poseBadge
+
+        // 6) Phase 2: 2P Co-op Festive Pink-Gold Ribbon + Midpoint Hologram Heart + Momo/Popo Corner Guides
+        let cRibbon = SKShapeNode(rectOf: CGSize(width: 390, height: 46), cornerRadius: 23)
+        cRibbon.fillColor = UIColor(red: 1.0, green: 0.36, blue: 0.56, alpha: 0.96)
+        cRibbon.strokeColor = UIColor(red: 1.0, green: 0.86, blue: 0.38, alpha: 1.0)
+        cRibbon.lineWidth = 4.0
+        cRibbon.zPosition = 34
+        cRibbon.isHidden = true
+        gameLayer.addChild(cRibbon)
+        coopRibbonBg = cRibbon
+
+        let cRibbonLbl = SKLabelNode()
+        cRibbonLbl.verticalAlignmentMode = .center
+        cRibbonLbl.horizontalAlignmentMode = .center
+        cRibbonLbl.zPosition = 35
+        cRibbonLbl.isHidden = true
+        setStickerLabel(cRibbonLbl, text: "💖 2인 합체 보너스! 둘이 함께 큰 하트!", fontSize: 19, strokeColor: UIColor(red: 0.45, green: 0.06, blue: 0.22, alpha: 1), strokeWidth: 5.5)
+        gameLayer.addChild(cRibbonLbl)
+        coopRibbonLbl = cRibbonLbl
+
+        let cPctBg = SKShapeNode(rectOf: CGSize(width: 224, height: 24), cornerRadius: 12)
+        cPctBg.fillColor = UIColor(red: 0.98, green: 0.95, blue: 0.88, alpha: 0.94)
+        cPctBg.strokeColor = UIColor(red: 0.82, green: 0.62, blue: 0.30, alpha: 0.95)
+        cPctBg.lineWidth = 3.0
+        cPctBg.zPosition = 34
+        cPctBg.isHidden = true
+        gameLayer.addChild(cPctBg)
+        coopPctBg = cPctBg
+
+        let cPctFill = SKShapeNode()
+        cPctFill.fillColor = UIColor(red: 1.0, green: 0.38, blue: 0.60, alpha: 1.0)
+        cPctFill.strokeColor = .clear
+        cPctFill.zPosition = 35
+        cPctFill.isHidden = true
+        gameLayer.addChild(cPctFill)
+        coopPctFill = cPctFill
+
+        let cPctLbl = SKLabelNode()
+        cPctLbl.verticalAlignmentMode = .center
+        cPctLbl.horizontalAlignmentMode = .center
+        cPctLbl.zPosition = 36
+        cPctLbl.isHidden = true
+        setStickerLabel(cPctLbl, text: "0%", fontSize: 14, strokeColor: UIColor(red: 0.40, green: 0.08, blue: 0.20, alpha: 1), strokeWidth: 4.5)
+        gameLayer.addChild(cPctLbl)
+        coopPctLbl = cPctLbl
+
+        let cHeart = SKSpriteNode(texture: textures["fx_coop_heart"])
+        cHeart.size = CGSize(width: 120, height: 120)
+        cHeart.zPosition = 28
+        cHeart.isHidden = true
+        gameLayer.addChild(cHeart)
+        coopHeartNode = cHeart
+
+        let cMomo = SKSpriteNode(texture: textures["momo"])
+        cMomo.size = CGSize(width: 118, height: 118)
+        cMomo.zPosition = 26
+        cMomo.isHidden = true
+        gameLayer.addChild(cMomo)
+        coopMomoNode = cMomo
+
+        let cPopo = SKSpriteNode(texture: textures["popo"])
+        cPopo.size = CGSize(width: 118, height: 118)
+        cPopo.zPosition = 26
+        cPopo.isHidden = true
+        gameLayer.addChild(cPopo)
+        coopPopoNode = cPopo
+
+        // 7) Phase 3: Approaching Silhouette Wall Bonus Round (Z=12 behind player silhouettes Z=20!)
+        let wBanner = SKShapeNode(rectOf: CGSize(width: 340, height: 46), cornerRadius: 23)
+        wBanner.fillColor = UIColor(red: 0.24, green: 0.68, blue: 1.0, alpha: 0.96)
+        wBanner.strokeColor = UIColor.white.withAlphaComponent(0.95)
+        wBanner.lineWidth = 4.0
+        wBanner.zPosition = 34
+        wBanner.isHidden = true
+        gameLayer.addChild(wBanner)
+        wallBannerBg = wBanner
+
+        let wBannerLbl = SKLabelNode()
+        wBannerLbl.verticalAlignmentMode = .center
+        wBannerLbl.horizontalAlignmentMode = .center
+        wBannerLbl.zPosition = 35
+        wBannerLbl.isHidden = true
+        setStickerLabel(wBannerLbl, text: "🧱 벽 뚫기! 모양에 쏙 맞춰요!", fontSize: 21, strokeColor: UIColor(red: 0.08, green: 0.24, blue: 0.48, alpha: 1), strokeWidth: 5.5)
+        gameLayer.addChild(wBannerLbl)
+        wallBannerLbl = wBannerLbl
+
+        let wSprite = SKSpriteNode(texture: textures["fx_wall_frame"])
+        wSprite.zPosition = 12
+        wSprite.isHidden = true
+        gameLayer.addChild(wSprite)
+        wallFrameSprite = wSprite
+
+        let wGlow = SKShapeNode(circleOfRadius: 120)
+        wGlow.fillColor = .clear
+        wGlow.strokeColor = UIColor(red: 0.13, green: 1.0, blue: 0.53, alpha: 0.85)
+        wGlow.lineWidth = 10
+        wGlow.blendMode = .add
+        wGlow.zPosition = 14
+        wGlow.isHidden = true
+        gameLayer.addChild(wGlow)
+        wallRimGlow = wGlow
     }
 
     private func smoothstep(edge0: CGFloat, edge1: CGFloat, x: CGFloat) -> CGFloat {
@@ -2553,38 +3495,55 @@ final class KidsGameScene: SKScene {
     }
 
     private func makeSilhouetteLimb(lineWidth: CGFloat, parent: SKNode) -> SilhouetteLimb {
-        let glow = SKShapeNode()
-        glow.fillColor = .clear
-        glow.lineWidth = lineWidth + 8.0
-        glow.lineCap = .round
-        glow.lineJoin = .round
-        glow.blendMode = .alpha
+        let capTex = trailCapsuleTex
+        let glow = SKSpriteNode(texture: capTex, color: .white, size: CGSize(width: 48, height: 24))
+        glow.colorBlendFactor = 1.0
+        glow.blendMode = .add
         glow.alpha = 0
+        glow.isHidden = true
         glow.zPosition = 0
         parent.addChild(glow)
 
-        let main = SKShapeNode()
-        main.fillColor = .clear
-        main.lineWidth = lineWidth
-        main.lineCap = .round
-        main.lineJoin = .round
+        let main = SKSpriteNode(texture: capTex, color: .white, size: CGSize(width: 48, height: 24))
+        main.colorBlendFactor = 1.0
         main.blendMode = .alpha
         main.alpha = 0
+        main.isHidden = true
         main.zPosition = 1
         parent.addChild(main)
 
-        return SilhouetteLimb(glow: glow, main: main)
+        return SilhouetteLimb(glow: glow, main: main, thickness: lineWidth)
     }
 
     private func makeOrganicSilhouetteRig() -> OrganicSilhouetteRig {
         let root = SKNode()
-        root.zPosition = 20
+        root.zPosition = 22
         root.isHidden = true
+
+        let haloTex = headHaloRingTex
+        let hGlow = SKSpriteNode(texture: haloTex, color: .white, size: CGSize(width: 44, height: 44))
+        hGlow.colorBlendFactor = 1.0
+        hGlow.blendMode = .add
+        hGlow.alpha = 0
+        hGlow.isHidden = true
+        hGlow.zPosition = 0
+        root.addChild(hGlow)
+
+        let hMain = SKSpriteNode(texture: haloTex, color: .white, size: CGSize(width: 36, height: 36))
+        hMain.colorBlendFactor = 1.0
+        hMain.blendMode = .alpha
+        hMain.alpha = 0
+        hMain.isHidden = true
+        hMain.zPosition = 1
+        root.addChild(hMain)
+
         return OrganicSilhouetteRig(
             root: root,
             spine: makeSilhouetteLimb(lineWidth: 11.0, parent: root),
-            shoulderArc: makeSilhouetteLimb(lineWidth: 9.0, parent: root),
-            pelvisArc: makeSilhouetteLimb(lineWidth: 8.0, parent: root),
+            shoulderArcL: makeSilhouetteLimb(lineWidth: 9.0, parent: root),
+            shoulderArcR: makeSilhouetteLimb(lineWidth: 9.0, parent: root),
+            pelvisArcL: makeSilhouetteLimb(lineWidth: 8.0, parent: root),
+            pelvisArcR: makeSilhouetteLimb(lineWidth: 8.0, parent: root),
             lUpperArm: makeSilhouetteLimb(lineWidth: 9.0, parent: root),
             lForearm: makeSilhouetteLimb(lineWidth: 6.5, parent: root),
             rUpperArm: makeSilhouetteLimb(lineWidth: 9.0, parent: root),
@@ -2593,67 +3552,72 @@ final class KidsGameScene: SKScene {
             lShin: makeSilhouetteLimb(lineWidth: 6.5, parent: root),
             rThigh: makeSilhouetteLimb(lineWidth: 9.0, parent: root),
             rShin: makeSilhouetteLimb(lineWidth: 6.5, parent: root),
-            headHalo: makeSilhouetteLimb(lineWidth: 3.5, parent: root)
+            headHaloGlow: hGlow,
+            headHaloMain: hMain
         )
     }
 
-    private func updateOrganicSilhouetteRig(_ rig: OrganicSilhouetteRig, player p: PlayerPose, matchBlend: CGFloat) {
+    private func updateOrganicSilhouetteRig(_ rig: OrganicSilhouetteRig, player p: PlayerPose, matchBlend: CGFloat, isRainbow: Bool = false) {
         rig.root.isHidden = false
         let m = p.metrics
 
         let idleColor = p.id == 0
             ? UIColor(red: 0.404, green: 0.910, blue: 0.976, alpha: 1.0) // P1 calm sky #67E8F9
             : UIColor(red: 0.992, green: 0.643, blue: 0.686, alpha: 1.0) // P2 calm coral #FDA4AF
-        let matchColor = UIColor(red: 0.133, green: 1.0, blue: 0.533, alpha: 1.0) // Nintendo mint #22FF88
-        let strokeCol = lerpColor(idleColor, matchColor, t: matchBlend)
-        let baseAlpha = 0.40 + 0.36 * matchBlend
-        let glowAlphaBase = 0.20 * matchBlend
+        let rainbowCols: [UIColor] = [
+            UIColor(red: 1.0, green: 0.42, blue: 0.51, alpha: 1.0),
+            UIColor(red: 1.0, green: 0.83, blue: 0.23, alpha: 1.0),
+            UIColor(red: 0.13, green: 1.0, blue: 0.53, alpha: 1.0),
+            UIColor(red: 0.36, green: 0.94, blue: 0.89, alpha: 1.0),
+            UIColor(red: 0.75, green: 0.52, blue: 0.99, alpha: 1.0),
+        ]
+        let matchColor: UIColor = isRainbow
+            ? rainbowCols[Int(elapsed * 4.5 + Double(p.id) * 2.0) % rainbowCols.count]
+            : UIColor(red: 0.133, green: 1.0, blue: 0.533, alpha: 1.0) // Nintendo mint #22FF88
+        let strokeCol = lerpColor(idleColor, matchColor, t: isRainbow ? max(0.55, matchBlend) : matchBlend)
+        let baseAlpha = 0.42 + 0.38 * matchBlend
+        let glowAlphaBase = (isRainbow ? 0.30 : 0.22) * max(isRainbow ? 0.45 : 0.0, matchBlend)
 
         func toSK(_ pt: CGPoint) -> CGPoint {
             CGPoint(x: pt.x * size.width, y: (1.0 - pt.y) * size.height)
         }
 
+        // 0 CGMutablePath allocations, 0 CPU tessellation — hardware-batched Metal capsule sprites!
         func applySegment(_ limb: SilhouetteLimb, from a: CGPoint?, to b: CGPoint?, confA: CGFloat, confB: CGFloat) {
             let vis = smoothstep(edge0: 0.12, edge1: 0.48, x: min(confA, confB))
             guard let a, let b, vis >= 0.02 else {
-                limb.main.alpha = 0
-                limb.glow.alpha = 0
+                limb.main.isHidden = true
+                limb.glow.isHidden = true
                 return
             }
-            let path = CGMutablePath()
-            path.move(to: toSK(a))
-            path.addLine(to: toSK(b))
-            limb.main.path = path
-            limb.main.strokeColor = strokeCol
-            limb.main.alpha = baseAlpha * vis
-            if glowAlphaBase > 0.01 {
-                limb.glow.path = path
-                limb.glow.strokeColor = matchColor
-                limb.glow.alpha = glowAlphaBase * vis
-            } else {
-                limb.glow.alpha = 0
-            }
-        }
+            let p0 = toSK(a)
+            let p1 = toSK(b)
+            let dx = p1.x - p0.x
+            let dy = p1.y - p0.y
+            let len = hypot(dx, dy)
+            let mid = CGPoint(x: (p0.x + p1.x) * 0.5, y: (p0.y + p1.y) * 0.5)
+            let ang = atan2(dy, dx)
+            let w = limb.thickness
 
-        func applyQuad(_ limb: SilhouetteLimb, from a: CGPoint?, ctrl c: CGPoint?, to b: CGPoint?, conf: CGFloat) {
-            let vis = smoothstep(edge0: 0.12, edge1: 0.48, x: conf)
-            guard let a, let c, let b, vis >= 0.02 else {
-                limb.main.alpha = 0
-                limb.glow.alpha = 0
-                return
-            }
-            let path = CGMutablePath()
-            path.move(to: toSK(a))
-            path.addQuadCurve(to: toSK(b), control: toSK(c))
-            limb.main.path = path
-            limb.main.strokeColor = strokeCol
+            limb.main.isHidden = false
+            limb.main.position = mid
+            limb.main.zRotation = ang
+            limb.main.xScale = (len + w) / 48.0
+            limb.main.yScale = w / 24.0
+            limb.main.color = strokeCol
             limb.main.alpha = baseAlpha * vis
+
             if glowAlphaBase > 0.01 {
-                limb.glow.path = path
-                limb.glow.strokeColor = matchColor
+                let gw = w + 8.0
+                limb.glow.isHidden = false
+                limb.glow.position = mid
+                limb.glow.zRotation = ang
+                limb.glow.xScale = (len + gw) / 48.0
+                limb.glow.yScale = gw / 24.0
+                limb.glow.color = matchColor
                 limb.glow.alpha = glowAlphaBase * vis
             } else {
-                limb.glow.alpha = 0
+                limb.glow.isHidden = true
             }
         }
 
@@ -2669,16 +3633,20 @@ final class KidsGameScene: SKScene {
         // 1) Central rounded spine (neckMid -> hipMid)
         applySegment(rig.spine, from: neckPt, to: hipMid, confA: max(m.neckConf, shConf), confB: spineBottomConf)
 
-        // 2) Soft curved shoulder arc (shL -> raised neckCtrl -> shR) & subtle pelvis arc (hipL -> hipMid -> hipR)
-        let shCtrl = CGPoint(x: shMid.x, y: shMid.y - m.torsoH * 0.09)
-        applyQuad(rig.shoulderArc, from: m.lShoulder, ctrl: shCtrl, to: m.rShoulder, conf: shConf)
+        // 2) Soft curved shoulder & pelvis arcs (2-segment organic bridge, zero SKShapeNode!)
+        let shPeak = CGPoint(x: shMid.x, y: shMid.y - m.torsoH * 0.045)
+        applySegment(rig.shoulderArcL, from: m.lShoulder, to: shPeak, confA: shConf, confB: shConf)
+        applySegment(rig.shoulderArcR, from: shPeak, to: m.rShoulder, confA: shConf, confB: shConf)
 
         if let lh = m.lHip, let rh = m.rHip, let hm = hipMid {
-            let pelvCtrl = CGPoint(x: hm.x, y: hm.y + m.torsoH * 0.06)
-            applyQuad(rig.pelvisArc, from: lh, ctrl: pelvCtrl, to: rh, conf: hipConf)
+            let pelvPeak = CGPoint(x: hm.x, y: hm.y + m.torsoH * 0.03)
+            applySegment(rig.pelvisArcL, from: lh, to: pelvPeak, confA: hipConf, confB: hipConf)
+            applySegment(rig.pelvisArcR, from: pelvPeak, to: rh, confA: hipConf, confB: hipConf)
         } else {
-            rig.pelvisArc.main.alpha = 0
-            rig.pelvisArc.glow.alpha = 0
+            rig.pelvisArcL.main.isHidden = true
+            rig.pelvisArcL.glow.isHidden = true
+            rig.pelvisArcR.main.isHidden = true
+            rig.pelvisArcR.glow.isHidden = true
         }
 
         // 3) Tapered rounded limbs (upper 9pt -> lower 6.5pt, smooth confidence-driven alpha, ZERO joint dots!)
@@ -2692,25 +3660,25 @@ final class KidsGameScene: SKScene {
         applySegment(rig.rThigh, from: m.rHip,  to: m.rKnee,  confA: m.rHipConf,  confB: m.rKneeConf)
         applySegment(rig.rShin,  from: m.rKnee, to: m.rAnkle, confA: m.rKneeConf, confB: m.rAnkleConf)
 
-        // 4) Calm open head halo
+        // 4) Calm open head halo (pre-baked ring sprite!)
         let headVis = smoothstep(edge0: 0.12, edge1: 0.48, x: m.headConf)
         if headVis >= 0.02 {
             let hc = toSK(p.head)
-            let hr: CGFloat = 16.0
-            let hp = CGPath(ellipseIn: CGRect(x: hc.x - hr, y: hc.y - hr, width: hr * 2, height: hr * 2), transform: nil)
-            rig.headHalo.main.path = hp
-            rig.headHalo.main.strokeColor = strokeCol
-            rig.headHalo.main.alpha = baseAlpha * headVis
+            rig.headHaloMain.isHidden = false
+            rig.headHaloMain.position = hc
+            rig.headHaloMain.color = strokeCol
+            rig.headHaloMain.alpha = baseAlpha * headVis
             if glowAlphaBase > 0.01 {
-                rig.headHalo.glow.path = hp
-                rig.headHalo.glow.strokeColor = matchColor
-                rig.headHalo.glow.alpha = glowAlphaBase * headVis
+                rig.headHaloGlow.isHidden = false
+                rig.headHaloGlow.position = hc
+                rig.headHaloGlow.color = matchColor
+                rig.headHaloGlow.alpha = glowAlphaBase * headVis
             } else {
-                rig.headHalo.glow.alpha = 0
+                rig.headHaloGlow.isHidden = true
             }
         } else {
-            rig.headHalo.main.alpha = 0
-            rig.headHalo.glow.alpha = 0
+            rig.headHaloMain.isHidden = true
+            rig.headHaloGlow.isHidden = true
         }
     }
 
@@ -2738,42 +3706,172 @@ final class KidsGameScene: SKScene {
             return m.torsoLean > 0.14 || sameSide
         case "starfish":
             return (bothAboveSh || m.wristSpan > m.shoulderW * 1.7) && (m.ankleSpan > m.shoulderW * 1.15 || bothUp)
+        // Phase 1: 6 New Poses
+        case "rabbit":
+            return bothUp && m.lElbowAngle < 130 && m.rElbowAngle < 130 && m.wristSpan < m.shoulderW * 1.25
+        case "trex":
+            let chestL = p.leftHand.y > m.shoulderY - 0.04 && p.leftHand.y < m.hipY + 0.06
+            let chestR = p.rightHand.y > m.shoulderY - 0.04 && p.rightHand.y < m.hipY + 0.06
+            return m.lElbowAngle < 118 && m.rElbowAngle < 118 && chestL && chestR && (m.isSquatting || p.head.y > 0.46)
+        case "rocket":
+            let leftUpRightDown = p.leftHand.y < p.head.y - 0.04 && p.rightHand.y > m.shoulderY - 0.02
+            let rightUpLeftDown = p.rightHand.y < p.head.y - 0.04 && p.leftHand.y > m.shoulderY - 0.02
+            return leftUpRightDown || rightUpLeftDown
+        case "robot":
+            return abs(p.leftHand.y - p.rightHand.y) > m.torsoH * 0.48
+                && m.lElbowAngle > 55 && m.lElbowAngle < 135
+                && m.rElbowAngle > 55 && m.rElbowAngle < 135
+        case "heart":
+            let highHands = p.leftHand.y < p.head.y + m.torsoH * 0.12 && p.rightHand.y < p.head.y + m.torsoH * 0.12
+            let elbowsOut = m.lElbow.x < p.head.x + 0.04 && m.rElbow.x > p.head.x - 0.04
+            return highHands && m.wristSpan < m.shoulderW * 0.92 && elbowsOut
+        case "penguin":
+            let hipBandL = p.leftHand.y > m.hipY - 0.14 && p.leftHand.y < m.hipY + 0.18
+            let hipBandR = p.rightHand.y > m.hipY - 0.14 && p.rightHand.y < m.hipY + 0.18
+            return hipBandL && hipBandR && m.wristSpan > m.shoulderW * 1.20 && m.wristSpan < m.shoulderW * 2.05
         default:
             return bothUp
         }
     }
 
+    private func checkCoopPose(players: [PlayerPose], id: String) -> (matched: Bool, anchor: CGPoint) {
+        let sorted = players.sorted { $0.centerX < $1.centerX }
+        guard sorted.count >= 2 else {
+            if let solo = sorted.first, settings.devMode {
+                let m = solo.handsUp || solo.metrics.isSquatting
+                return (m, CGPoint(x: 0.5, y: 0.46))
+            }
+            return (false, CGPoint(x: 0.5, y: 0.46))
+        }
+        let p1 = sorted[0]
+        let p2 = sorted[1]
+        let midHands = CGPoint(
+            x: (p1.rightHand.x + p2.leftHand.x) * 0.5,
+            y: (p1.rightHand.y + p2.leftHand.y) * 0.5
+        )
+        let midTop = CGPoint(
+            x: (p1.centerX + p2.centerX) * 0.5,
+            y: min(p1.head.y, p2.head.y) + 0.04
+        )
+        switch id {
+        case "coop_heart":
+            let outerUp = p1.leftHand.y < p1.head.y + 0.08 && p2.rightHand.y < p2.head.y + 0.08
+            let innerDist = min(
+                hypot(p1.rightHand.x - p2.leftHand.x, p1.rightHand.y - p2.leftHand.y),
+                hypot(p1.leftHand.x - p2.rightHand.x, p1.leftHand.y - p2.rightHand.y)
+            )
+            let bothHighClose = p1.handsUp && p2.handsUp && innerDist < 0.28
+            return ((outerUp && innerDist < 0.28) || bothHighClose, midTop)
+        case "coop_seesaw":
+            let matched = (p1.handsUp && p2.metrics.isSquatting) || (p2.handsUp && p1.metrics.isSquatting)
+            return (matched, CGPoint(x: (p1.centerX + p2.centerX) * 0.5, y: 0.48))
+        case "coop_highfive":
+            let dist = hypot(p1.rightHand.x - p2.leftHand.x, p1.rightHand.y - p2.leftHand.y)
+            let high = p1.rightHand.y < p1.metrics.shoulderY + 0.06 && p2.leftHand.y < p2.metrics.shoulderY + 0.06
+            return (dist < 0.20 && high, midHands)
+        default:
+            return (p1.handsUp && p2.handsUp, midTop)
+        }
+    }
+
+    private func triggerPolaroidCapture(for roundItem: AnimalRoundItem, players: [PlayerPose]) {
+        SoundEngine.shared.playShutter()
+        // Brief crisp white camera shutter flash
+        flashNode.size = size
+        flashNode.color = .white
+        flashNode.alpha = 0.65
+        flashNode.removeAllActions()
+        flashNode.run(.fadeOut(withDuration: 0.22))
+
+        // Smart crop center around active player(s)
+        let cropCenter: CGPoint
+        if players.count >= 2 {
+            let cx = (players[0].centerX + players[1].centerX) * 0.5
+            let cy = (players[0].head.y + players[1].head.y) * 0.5 + 0.08
+            cropCenter = CGPoint(x: cx, y: cy)
+        } else if let p = players.first {
+            cropCenter = CGPoint(x: p.centerX, y: p.head.y + 0.12)
+        } else {
+            cropCenter = CGPoint(x: 0.5, y: 0.48)
+        }
+
+        let priority = (roundItem.isBossPose ? 40 : 0) + (roundItem.isCoop ? 35 : 0) + (roundItem.isWallRound ? 30 : 0) + animalCombo * 5 + animalIndex
+        let stickerName = roundItem.spec.tex
+        let captionText = roundItem.spec.caption
+
+        cameraManager?.captureSmartSnapshot(cropCenter: cropCenter) { [weak self] img in
+            guard let self else { return }
+            let rawItem = PoseSnapshotItem(
+                image: img,
+                stickerTexName: stickerName,
+                caption: captionText,
+                isBestCut: false
+            )
+            self.animalCapturedCuts.append(CapturedCut(item: rawItem, priority: priority))
+            // Keep top 3 highest-priority cuts, marking the #1 priority cut as Best Cut!
+            let top3 = self.animalCapturedCuts
+                .sorted { $0.priority > $1.priority }
+                .prefix(3)
+            let bestPriority = top3.first?.priority ?? -1
+            var bestMarked = false
+            let finalized: [PoseSnapshotItem] = top3.map { cut in
+                let isBest = !bestMarked && cut.priority == bestPriority
+                if isBest { bestMarked = true }
+                return PoseSnapshotItem(
+                    image: cut.item.image,
+                    stickerTexName: cut.item.stickerTexName,
+                    caption: isBest ? "베스트 컷!" : cut.item.caption,
+                    isBestCut: isBest
+                )
+            }
+            self.onSnapshotsUpdate?(finalized)
+        }
+    }
+
     private func updateAnimalPose(dt: CGFloat, players: [PlayerPose]) {
-        guard animalIndex < animalPoses.count else { return }
-        let cur = animalPoses[animalIndex]
+        guard animalIndex < animalRoundDeck.count else { return }
+        let roundItem = animalRoundDeck[animalIndex]
+        let cur = roundItem.spec
         let t = CGFloat(elapsed)
+        let isRainbow = animalCombo >= 3
 
         if animalPause > 0 {
             animalPause -= dt
             animalMatchBlend = max(0, animalMatchBlend - dt * 4.0)
             for (rigIdx, rig) in animalSilhouetteRigs.enumerated() {
                 if rigIdx < players.count {
-                    updateOrganicSilhouetteRig(rig, player: players[rigIdx], matchBlend: animalMatchBlend)
+                    updateOrganicSilhouetteRig(rig, player: players[rigIdx], matchBlend: animalMatchBlend, isRainbow: isRainbow)
                 } else {
                     rig.root.isHidden = true
                 }
             }
         } else {
             animalTimer = max(0, animalTimer - dt)
+            let matched: Bool
             var matchCount = 0
-            for p in players {
-                if checkPlayerAnimalPose(p, id: cur.id) { matchCount += 1 }
+            var coopAnchor = CGPoint(x: 0.5, y: 0.46)
+
+            if roundItem.isCoop {
+                let res = checkCoopPose(players: players, id: cur.id)
+                matched = res.matched
+                coopAnchor = res.anchor
+                matchCount = matched ? 2 : 0
+            } else {
+                for p in players {
+                    if checkPlayerAnimalPose(p, id: cur.id) { matchCount += 1 }
+                }
+                matched = matchCount > 0
             }
-            let matched = matchCount > 0
+
             if matched {
-                animalMatchGrace = 0.15
+                animalMatchGrace = 0.16
                 let boost: CGFloat = matchCount >= 2 ? 1.35 : 1.0
                 let prevStep = Int((animalHold / animalHoldTarget) * 3)
                 animalHold = min(animalHoldTarget, animalHold + dt * boost)
                 let nextStep = Int((animalHold / animalHoldTarget) * 3)
                 if nextStep > prevStep && nextStep < 3 { SoundEngine.shared.playClick() }
             } else if animalMatchGrace > 0 {
-                // Kid-friendly 0.15s match-loss grace so micro-wobbles don't penalize 4-6yo kids
+                // Kid-friendly 0.16s match-loss grace so micro-wobbles don't penalize 4-6yo kids
                 animalMatchGrace = max(0, animalMatchGrace - dt)
             } else {
                 animalHold = max(0, animalHold - dt * 0.45)
@@ -2781,12 +3879,18 @@ final class KidsGameScene: SKScene {
             let effectiveMatched = matched || animalMatchGrace > 0
             animalMatchBlend += ((effectiveMatched ? 1.0 : 0.0) - animalMatchBlend) * min(1.0, dt * 8.0)
 
-            // Layout & update HUD
-            let piePos = CGPoint(x: 68, y: size.height - 96)
+            let holdRatio = max(0, min(1, animalHold / animalHoldTarget))
+
+            // 1) Top-left pie timer (adaptive scale for iPhone landscape 852x393 vs iPad — ZERO overlap with pause or top-center!)
+            let isCompactWidth = size.width < 960
+            let pieScale: CGFloat = isCompactWidth ? 0.78 : 0.94
+            let piePos = CGPoint(x: isCompactWidth ? 46 : 54, y: size.height - (isCompactWidth ? 92 : 96))
             animalPieBg?.position = piePos
-            let timeRatio = max(0, min(1, animalTimer / animalTimeLimit))
+            animalPieBg?.setScale(pieScale)
+            let timeRatio = max(0, min(1, animalTimer / max(0.1, animalCurTimeLimit)))
             let pieStep = Int((timeRatio * 120.0).rounded())
             animalPieFill?.position = piePos
+            animalPieFill?.setScale(pieScale)
             if pieStep != lastAnimalPieStep {
                 lastAnimalPieStep = pieStep
                 let piePath = CGMutablePath()
@@ -2797,117 +3901,352 @@ final class KidsGameScene: SKScene {
                 }
                 animalPieFill?.path = piePath
             }
-            animalPieFill?.fillColor = timeRatio < 0.25 ? .systemRed : .systemYellow
+            animalPieFill?.fillColor = timeRatio < 0.25 ? .systemRed : (roundItem.isSpeedUp ? .systemOrange : .systemYellow)
 
+            // 2) Top-left 7 round mini badges (compact 4+3 grid on iPhone landscape 852x393 so rightmost edge x=203 stays 90pt clear of top-center!)
+            let hideTopBadges = roundItem.isCoop || roundItem.isWallRound
             if lastAnimalBadgeIndex != animalIndex || lastAnimalBadgeSize != size {
                 lastAnimalBadgeIndex = animalIndex
                 lastAnimalBadgeSize = size
-                for i in animalPoses.indices {
-                    let bx = 136 + CGFloat(i) * 44
-                    let by = piePos.y
+                for i in animalRoundDeck.indices where i < animalBadgeRings.count {
+                    let bx: CGFloat
+                    let by: CGFloat
+                    let baseBadgeScale: CGFloat
+                    if isCompactWidth {
+                        let col = i < 4 ? i : (i - 4)
+                        let row = i < 4 ? 0 : 1
+                        bx = 94 + CGFloat(col) * 32
+                        by = size.height - (row == 0 ? 76 : 108)
+                        baseBadgeScale = 0.70
+                    } else {
+                        bx = 112 + CGFloat(i) * 38
+                        by = piePos.y
+                        baseBadgeScale = 0.90
+                    }
                     let isCur = i == animalIndex
                     let isDone = animalCleared[i]
                     animalBadgeRings[i].position = CGPoint(x: bx, y: by)
                     animalBadgeRings[i].fillColor = isDone ? UIColor(red: 1.0, green: 0.95, blue: 0.69, alpha: 0.95) : .white.withAlphaComponent(0.94)
                     animalBadgeRings[i].strokeColor = isCur ? .systemYellow : (isDone ? .systemGreen : UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1))
                     animalBadgeRings[i].lineWidth = isCur ? 4.5 : 2.5
-                    animalBadgeRings[i].setScale(isCur ? 1.15 : 1.0)
+                    animalBadgeRings[i].setScale(baseBadgeScale * (isCur ? 1.16 : 1.0))
                     animalBadgeSprites[i].position = CGPoint(x: bx, y: by)
+                    animalBadgeSprites[i].setScale(baseBadgeScale * (isCur ? 1.08 : 0.95))
                     animalBadgeSprites[i].alpha = isDone ? 0.55 : 1.0
                 }
             }
-
-            let panelX = size.width * 0.80
-            let pillY = size.height * 0.78
-            animalNamePill?.position = CGPoint(x: panelX, y: pillY)
-            animalNamePill?.fillColor = cur.color
-            setStickerLabel(animalNameLbl, text: cur.name, fontSize: 27, strokeColor: UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1), strokeWidth: 6.5)
-            animalNameLbl?.position = CGPoint(x: panelX, y: pillY)
-            animalCueBg?.position = CGPoint(x: panelX, y: pillY - 40)
-            animalCueBg?.strokeColor = effectiveMatched ? UIColor(red: 0.13, green: 1.0, blue: 0.53, alpha: 0.90) : UIColor.white.withAlphaComponent(0.45)
-            setStickerLabel(animalCueLbl, text: cur.cue, fontSize: 17.5, strokeColor: UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 1), strokeWidth: 5.5)
-            animalCueLbl?.position = CGPoint(x: panelX, y: pillY - 40)
-
-            let barPos = CGPoint(x: panelX, y: pillY - 72)
-            animalBarBg?.position = barPos
-            animalBarFill?.position = barPos
-            let holdRatio = max(0, min(1, animalHold / animalHoldTarget))
-            let holdStep = Int((holdRatio * 100.0).rounded())
-            if holdStep != lastAnimalHoldStep {
-                lastAnimalHoldStep = holdStep
-                let fillW = max(0, 202 * holdRatio)
-                animalBarFill?.path = fillW > 3
-                    ? CGPath(roundedRect: CGRect(x: -101, y: -7, width: fillW, height: 14), cornerWidth: 7, cornerHeight: 7, transform: nil)
-                    : nil
+            for i in animalBadgeRings.indices {
+                animalBadgeRings[i].isHidden = hideTopBadges
+                animalBadgeSprites[i].isHidden = hideTopBadges
             }
-            animalBarFill?.fillColor = effectiveMatched ? UIColor(red: 0.22, green: 0.94, blue: 0.49, alpha: 1) : .systemCyan
 
-            // Crisp navy-outlined golden 3D star at the right end of the hold bar
-            animalBarStar?.position = CGPoint(x: barPos.x + 108, y: barPos.y)
-            animalBarStar?.setScale(effectiveMatched ? (1.08 + 0.10 * sin(t * 10)) : 1.0)
-            animalBarStar?.zRotation = effectiveMatched ? sin(t * 7) * 0.14 : 0
-
-            let guideDim = min(size.width, size.height) * 0.40
-            let guidePos = CGPoint(x: size.width * 0.84, y: size.height * 0.30 + sin(t * (effectiveMatched ? 8 : 3)) * (effectiveMatched ? 8 : 4))
-            if let gTex = textures[cur.tex], animalGuideNode?.texture !== gTex {
-                animalGuideNode?.texture = gTex
+            // 3) Live "🔥 N COMBO!" sticker badge (ONLY thing on top-right below ⭐ Score!)
+            let showCombo = animalCombo >= 2 && !roundItem.isCoop
+            animalComboPill?.isHidden = !showCombo
+            animalComboLbl?.isHidden = !showCombo
+            if showCombo {
+                let comboPos = CGPoint(x: size.width - 92, y: size.height - 84)
+                animalComboPill?.position = comboPos
+                animalComboLbl?.position = comboPos
+                let pulse = 1.0 + 0.05 * sin(t * 9.0)
+                animalComboPill?.setScale(pulse)
+                animalComboLbl?.setScale(pulse)
+                setStickerLabel(animalComboLbl, text: "🔥 \(animalCombo) COMBO!", fontSize: 17, strokeColor: UIColor(red: 0.45, green: 0.12, blue: 0.02, alpha: 1), strokeWidth: 5.0)
             }
-            animalGuideNode?.size = CGSize(width: guideDim, height: guideDim)
-            animalGuideNode?.position = guidePos
-            animalGuideNode?.setScale(1.0 + 0.06 * animalMatchBlend)
-            animalGuideGlow?.position = guidePos
-            animalGuideGlow?.alpha = 0.85 * animalMatchBlend
 
-            // Calm, organic, rounded glowing Nintendo-style body silhouette (ZERO wireframe box, ZERO white dots, ZERO blinking!)
+            // 4) Toggle Standard Center-Hero + Top-Center Header vs 2P Co-op Ribbon vs Hole-in-Wall Mode (ZERO double headers!)
+            let showStandardPanel = !roundItem.isCoop && !roundItem.isWallRound
+            animalNamePill?.isHidden = !showStandardPanel
+            animalNameLbl?.isHidden = !showStandardPanel
+            animalCueBg?.isHidden = !showStandardPanel
+            animalCueLbl?.isHidden = !showStandardPanel
+            animalBarBg?.isHidden = !showStandardPanel
+            animalBarFill?.isHidden = !showStandardPanel
+            animalBarStar?.isHidden = !showStandardPanel
+            animalGuideNode?.isHidden = !showStandardPanel
+            animalGuideGlow?.isHidden = !showStandardPanel
+            animalBossCrown?.isHidden = !(showStandardPanel && roundItem.isBossPose)
+
+            if showStandardPanel {
+                // TOP-CENTER HUD Stack (right side is 100% open; compact height lifts header & lowers guide for 50pt+ Boss Crown clearance!)
+                let isCompactHeight = size.height < 500
+                let hdrScale: CGFloat = isCompactHeight ? 0.84 : 1.0
+                let panelX = size.width * 0.50
+                let pillY = isCompactHeight ? (size.height - 30) : (size.height - 52)
+                let cueY = isCompactHeight ? (pillY - 27) : (pillY - 34)
+                let barY = isCompactHeight ? (pillY - 50) : (pillY - 62)
+
+                animalNamePill?.position = CGPoint(x: panelX, y: pillY)
+                animalNamePill?.setScale(hdrScale)
+                animalNamePill?.fillColor = roundItem.isBossPose ? UIColor(red: 1.0, green: 0.78, blue: 0.14, alpha: 1.0) : cur.color
+                animalNamePill?.strokeColor = roundItem.isBossPose ? .white : UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1)
+                let titleText = roundItem.isBossPose ? "👑 \(cur.name) x2!" : (roundItem.isSpeedUp ? "⚡ \(cur.name)" : cur.name)
+                setStickerLabel(animalNameLbl, text: titleText, fontSize: 23, strokeColor: UIColor(red: 0.12, green: 0.23, blue: 0.37, alpha: 1), strokeWidth: 6.0)
+                animalNameLbl?.position = CGPoint(x: panelX, y: pillY)
+                animalNameLbl?.setScale(hdrScale)
+
+                animalCueBg?.position = CGPoint(x: panelX, y: cueY)
+                animalCueBg?.setScale(hdrScale)
+                animalCueBg?.strokeColor = effectiveMatched ? UIColor(red: 0.13, green: 1.0, blue: 0.53, alpha: 0.90) : UIColor.white.withAlphaComponent(0.45)
+                setStickerLabel(animalCueLbl, text: cur.cue, fontSize: 15.5, strokeColor: UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 1), strokeWidth: 5.0)
+                animalCueLbl?.position = CGPoint(x: panelX, y: cueY)
+                animalCueLbl?.setScale(hdrScale)
+
+                let barPos = CGPoint(x: panelX, y: barY)
+                animalBarBg?.position = barPos
+                animalBarBg?.setScale(hdrScale)
+                animalBarFill?.position = barPos
+                animalBarFill?.setScale(hdrScale)
+                let holdStep = Int((holdRatio * 100.0).rounded())
+                if holdStep != lastAnimalHoldStep {
+                    lastAnimalHoldStep = holdStep
+                    let fillW = max(0, 196 * holdRatio)
+                    animalBarFill?.path = fillW > 3
+                        ? CGPath(roundedRect: CGRect(x: -98, y: -5.5, width: fillW, height: 11), cornerWidth: 5.5, cornerHeight: 5.5, transform: nil)
+                        : nil
+                }
+                animalBarFill?.fillColor = effectiveMatched ? UIColor(red: 0.22, green: 0.94, blue: 0.49, alpha: 1) : .systemCyan
+
+                animalBarStar?.position = CGPoint(x: barPos.x + 104 * hdrScale, y: barPos.y)
+                animalBarStar?.setScale(hdrScale * (effectiveMatched ? (1.08 + 0.10 * sin(t * 10)) : 1.0))
+                animalBarStar?.zRotation = effectiveMatched ? sin(t * 7) * 0.14 : 0
+
+                // CENTER-HERO Animal Guide (50pt+ air gap below barY on iPhone 852x393, bold 0.50*min(W,H) on iPad!)
+                let guideDim = min(size.width, size.height) * (isCompactHeight ? 0.45 : 0.50)
+                let guideBaseY = size.height * (isCompactHeight ? 0.39 : 0.46)
+                let guidePos = CGPoint(
+                    x: size.width * 0.50,
+                    y: guideBaseY + sin(t * (effectiveMatched ? 8 : 3)) * (effectiveMatched ? 6 : 3.0)
+                )
+                if let gTex = textures[cur.tex], animalGuideNode?.texture !== gTex {
+                    animalGuideNode?.texture = gTex
+                }
+                animalGuideNode?.size = CGSize(width: guideDim, height: guideDim)
+                animalGuideNode?.position = guidePos
+                animalGuideNode?.setScale(1.0 + 0.06 * animalMatchBlend)
+                animalGuideNode?.alpha = 0.88 + 0.12 * animalMatchBlend
+
+                let glowDim = guideDim * (1.24 + 0.14 * animalMatchBlend + 0.04 * sin(t * 5.0))
+                animalGuideGlow?.size = CGSize(width: glowDim, height: glowDim)
+                animalGuideGlow?.position = guidePos
+                animalGuideGlow?.color = lerpColor(
+                    UIColor(red: 1.0, green: 0.94, blue: 0.68, alpha: 1.0),
+                    UIColor(red: 0.13, green: 1.0, blue: 0.53, alpha: 1.0),
+                    t: animalMatchBlend
+                )
+                animalGuideGlow?.alpha = 0.26 + 0.62 * animalMatchBlend
+
+                if roundItem.isBossPose {
+                    if let crownTex = textures["fx_crown_gold"], animalBossCrown?.texture !== crownTex {
+                        animalBossCrown?.texture = crownTex
+                    }
+                    let cw = guideDim * 0.28
+                    let ch = cw * 0.78
+                    animalBossCrown?.size = CGSize(width: cw, height: ch)
+                    let maxCrownY = barY - (16 * hdrScale + ch * 0.5 + 8)
+                    let crownY = min(maxCrownY, guidePos.y + guideDim * 0.52) + sin(t * 6.0) * 3.0
+                    animalBossCrown?.position = CGPoint(x: guidePos.x, y: crownY)
+                    animalBossCrown?.zRotation = sin(t * 4.0) * 0.12
+                }
+            }
+
+            // 5) Phase 2: 2P Co-op Bonus Visuals (Pink-Gold Ribbon + Midpoint Hologram Heart + Momo/Popo Corners)
+            coopRibbonBg?.isHidden = !roundItem.isCoop
+            coopRibbonLbl?.isHidden = !roundItem.isCoop
+            coopPctBg?.isHidden = !roundItem.isCoop
+            coopPctFill?.isHidden = !roundItem.isCoop
+            coopPctLbl?.isHidden = !roundItem.isCoop
+            coopHeartNode?.isHidden = !roundItem.isCoop
+            coopMomoNode?.isHidden = !roundItem.isCoop
+            coopPopoNode?.isHidden = !roundItem.isCoop
+
+            if roundItem.isCoop {
+                let ribbonPos = CGPoint(x: size.width * 0.5, y: size.height - 52)
+                coopRibbonBg?.position = ribbonPos
+                coopRibbonLbl?.position = ribbonPos
+                setStickerLabel(coopRibbonLbl, text: "💖 2인 합체 보너스! \(cur.cue)", fontSize: 19, strokeColor: UIColor(red: 0.45, green: 0.06, blue: 0.22, alpha: 1), strokeWidth: 5.5)
+
+                let pctPos = CGPoint(x: size.width * 0.5, y: size.height - 92)
+                coopPctBg?.position = pctPos
+                coopPctFill?.position = pctPos
+                coopPctLbl?.position = pctPos
+                let pctStep = Int((holdRatio * 100.0).rounded())
+                if pctStep != lastCoopPctStep {
+                    lastCoopPctStep = pctStep
+                    let fillW = max(0, 214 * holdRatio)
+                    coopPctFill?.path = fillW > 3
+                        ? CGPath(roundedRect: CGRect(x: -107, y: -8, width: fillW, height: 16), cornerWidth: 8, cornerHeight: 8, transform: nil)
+                        : nil
+                    setStickerLabel(coopPctLbl, text: "\(pctStep)%", fontSize: 14, strokeColor: UIColor(red: 0.40, green: 0.08, blue: 0.20, alpha: 1), strokeWidth: 4.5)
+                }
+
+                // Midpoint Hologram Heart anchored directly between players' hands!
+                let skAnchor = CGPoint(x: coopAnchor.x * size.width, y: (1.0 - coopAnchor.y) * size.height)
+                if let hTex = textures["fx_coop_heart"], coopHeartNode?.texture !== hTex {
+                    coopHeartNode?.texture = hTex
+                }
+                coopHeartNode?.position = skAnchor
+                let hScale = 0.65 + 0.58 * animalMatchBlend + 0.08 * sin(t * 8.0)
+                coopHeartNode?.setScale(hScale)
+                coopHeartNode?.alpha = 0.45 + 0.55 * animalMatchBlend
+
+                if effectiveMatched {
+                    coopSparkleTimer -= dt
+                    if coopSparkleTimer <= 0 {
+                        coopSparkleTimer = 0.14
+                        let st = SKSpriteNode(texture: starParticleTex, color: .systemYellow, size: CGSize(width: 20, height: 20))
+                        st.colorBlendFactor = 1.0
+                        st.blendMode = .add
+                        st.position = CGPoint(x: skAnchor.x + CGFloat.random(in: -48...48), y: skAnchor.y + CGFloat.random(in: -48...48))
+                        st.zPosition = 29
+                        fxLayer.addChild(st)
+                        burstParticles.append(BurstParticle(
+                            node: st,
+                            vx: CGFloat.random(in: -70...70),
+                            vy: CGFloat.random(in: 50...130),
+                            vrot: CGFloat.random(in: -5...5),
+                            life: 0.55,
+                            maxLife: 0.55,
+                            baseScale: 0.85,
+                            isStar: true
+                        ))
+                    }
+                }
+
+                let cornerDim = min(size.width, size.height) * 0.26
+                if let mTex = textures["momo"], coopMomoNode?.texture !== mTex { coopMomoNode?.texture = mTex }
+                if let pTex = textures["popo"], coopPopoNode?.texture !== pTex { coopPopoNode?.texture = pTex }
+                coopMomoNode?.size = CGSize(width: cornerDim, height: cornerDim)
+                coopMomoNode?.position = CGPoint(x: 78, y: 78 + sin(t * 5.0) * 5.0)
+                coopPopoNode?.size = CGSize(width: cornerDim, height: cornerDim)
+                coopPopoNode?.position = CGPoint(x: size.width - 78, y: 78 + cos(t * 5.0) * 5.0)
+            }
+
+            // 6) Phase 3: Approaching Silhouette Wall Bonus Round (s(t) = 0.22 + 0.98 * pow(t, 2.2))
+            wallBannerBg?.isHidden = !roundItem.isWallRound
+            wallBannerLbl?.isHidden = !roundItem.isWallRound
+            wallFrameSprite?.isHidden = !roundItem.isWallRound
+            wallRimGlow?.isHidden = !roundItem.isWallRound
+
+            var wallClearedNow = false
+            if roundItem.isWallRound {
+                let wPos = CGPoint(x: size.width * 0.5, y: size.height - 52)
+                wallBannerBg?.position = wPos
+                wallBannerLbl?.position = wPos
+                let wallProgress = max(0, min(1, 1.0 - (animalTimer / max(0.1, animalCurTimeLimit))))
+                let s = 0.22 + 0.98 * pow(wallProgress, 2.2)
+
+                if let wTex = textures["fx_wall_frame"], wallFrameSprite?.texture !== wTex {
+                    wallFrameSprite?.texture = wTex
+                }
+                wallFrameSprite?.size = CGSize(width: size.width * 0.96, height: size.height * 0.88)
+                wallFrameSprite?.position = CGPoint(x: size.width * 0.5, y: size.height * 0.46)
+                wallFrameSprite?.setScale(s)
+                wallFrameSprite?.alpha = min(0.96, 0.28 + wallProgress * 0.82)
+                wallFrameSprite?.color = effectiveMatched ? UIColor(red: 0.13, green: 1.0, blue: 0.53, alpha: 1.0) : .white
+                wallFrameSprite?.colorBlendFactor = effectiveMatched ? 0.28 : 0.0
+
+                wallRimGlow?.position = CGPoint(x: size.width * 0.5, y: size.height * 0.46)
+                wallRimGlow?.setScale(s * 1.15)
+                wallRimGlow?.alpha = effectiveMatched ? (0.45 + 0.35 * sin(t * 10.0)) : 0.0
+
+                // Pass zone: last 1.8s (wallProgress >= 0.76) while matched OR full hold!
+                if !wallPassed && ((wallProgress >= 0.76 && effectiveMatched) || holdRatio >= 1.0) {
+                    wallPassed = true
+                    wallClearedNow = true
+                }
+            }
+
+            // 7) Organic Nintendo Body Silhouettes (Rainbow Neon at 3+ Combo!)
             for (rigIdx, rig) in animalSilhouetteRigs.enumerated() {
                 if rigIdx < players.count {
-                    updateOrganicSilhouetteRig(rig, player: players[rigIdx], matchBlend: animalMatchBlend)
+                    updateOrganicSilhouetteRig(rig, player: players[rigIdx], matchBlend: animalMatchBlend, isRainbow: isRainbow)
                 } else {
                     rig.root.isHidden = true
                 }
             }
 
-            // Bottom-left warm cream circular posture icon badge (cute 3/4 pose_<animal>.png + glowing green progress ring!)
+            // 8) Bottom-left warm cream circular posture icon badge (hidden during 2P Co-op since Momo sits there)
             if let badge = animalPoseBadge {
-                badge.container.position = CGPoint(x: 80, y: 82)
-                updateCircularMoveBadge(
-                    badge,
-                    iconId: cur.id,
-                    title: "\(cur.name) 포즈",
-                    progress: holdRatio,
-                    active: true,
-                    pulse: 1.0 + (0.04 + 0.04 * sin(t * 9)) * animalMatchBlend
-                )
+                badge.container.isHidden = roundItem.isCoop
+                if !roundItem.isCoop {
+                    badge.container.position = CGPoint(x: 80, y: 82)
+                    updateCircularMoveBadge(
+                        badge,
+                        iconId: cur.id,
+                        title: "\(cur.name) 포즈",
+                        progress: holdRatio,
+                        active: true,
+                        pulse: 1.0 + (0.04 + 0.04 * sin(t * 9)) * animalMatchBlend
+                    )
+                }
             }
 
-            if animalHold >= animalHoldTarget || animalTimer <= 0 {
-                let cleared = animalHold >= animalHoldTarget
+            // 9) Round completion check
+            if wallClearedNow || animalHold >= animalHoldTarget || animalTimer <= 0 {
+                let cleared = wallClearedNow || (animalHold >= animalHoldTarget)
                 if cleared {
                     animalCleared[animalIndex] = true
                     animalSuccessCount += 1
-                    score += 10
-                    SoundEngine.shared.playGoldenPop()
-                    spawnBurst(at: CGPoint(x: size.width * 0.5, y: size.height * 0.52), color: cur.color, text: "\(cur.name) 완벽 변신! +10", power: 2, angle: 0)
+                    animalCombo += 1
+                    animalMaxCombo = max(animalMaxCombo, animalCombo)
+
+                    let pts: Int
+                    let burstText: String
+                    if roundItem.isCoop {
+                        pts = 20
+                        burstText = "💖 합체 대성공!! +20"
+                        SoundEngine.shared.playCoopFanfare()
+                    } else if roundItem.isWallRound {
+                        pts = 15
+                        burstText = "🧱 쏙! 통과!! +15"
+                        SoundEngine.shared.playWallPass()
+                    } else if roundItem.isBossPose {
+                        pts = 20
+                        burstText = "👑 보스 완벽 변신!! +20"
+                        SoundEngine.shared.playRainbowBlast()
+                    } else {
+                        pts = animalCombo >= 3 ? 12 : 10
+                        burstText = animalCombo >= 3 ? "🔥 \(animalCombo) COMBO! +\(pts)" : "\(cur.name) 완벽 변신! +\(pts)"
+                        SoundEngine.shared.playGoldenPop()
+                    }
+                    score += pts
+                    spawnBurst(at: CGPoint(x: size.width * 0.5, y: size.height * 0.52), color: cur.color, text: burstText, power: (roundItem.isCoop || roundItem.isBossPose || roundItem.isWallRound) ? 3 : 2, angle: 0)
+
+                    // Phase 4: Capture smart Polaroid snapshot on clear!
+                    triggerPolaroidCapture(for: roundItem, players: players)
                 } else {
+                    animalCombo = 0
                     score += 2
                     SoundEngine.shared.playBounce()
                     spawnBurst(at: CGPoint(x: size.width * 0.5, y: size.height * 0.52), color: .lightGray, text: "아쉬워요! 다음 도전! +2", power: 1, angle: 0)
                 }
-                onScore?(score)
-                animalIndex += 1
-                onProgress?(animalIndex, animalPoses.count)
 
-                if animalIndex >= animalPoses.count {
+                reportScore(score)
+                animalIndex += 1
+                reportProgress(animalIndex, animalRoundDeck.count)
+
+                if animalIndex >= animalRoundDeck.count {
                     spawnConfetti()
-                    finishGame("동물 7종 중 \(animalSuccessCount)마리 완벽 변신! ⭐ \(score)점!")
+                    finishGame("포즈 \(animalRoundDeck.count)라운드 중 \(animalSuccessCount)번 성공! 최고 \(animalMaxCombo)콤보 · ⭐ \(score)점!")
                 } else {
-                    let next = animalPoses[animalIndex]
-                    animalTimer = animalTimeLimit
+                    let nextItem = animalRoundDeck[animalIndex]
+                    animalCurTimeLimit = nextItem.timeLimit
+                    animalTimer = animalCurTimeLimit
                     animalHold = 0
                     animalMatchGrace = 0
                     animalMatchBlend = 0
                     animalPause = 0.85
-                    onCallout?("\(next.name)! \(next.cue)", 2.8)
+                    wallPassed = false
+                    lastCoopPctStep = -1
+                    SoundEngine.shared.setBgmRate(nextItem.isSpeedUp ? 1.08 : 1.0)
+                    // Keep top-center 100% free of overlapping SwiftUI callout pills; announce special rounds via crisp lower floating text!
+                    onCallout?("", 0)
+                    if nextItem.isBossPose {
+                        spawnFloatingText("👑 황금 보스 포즈 x2!", at: CGPoint(x: size.width * 0.5, y: size.height * 0.16), color: .systemYellow, big: true)
+                    } else if nextItem.isSpeedUp {
+                        spawnFloatingText("⚡ 스피드 업!!", at: CGPoint(x: size.width * 0.5, y: size.height * 0.16), color: .systemOrange, big: true)
+                    }
                 }
             }
         }
@@ -2946,6 +4285,30 @@ final class KidsGameScene: SKScene {
             (hd,nk,hp) = ((0,-0.95),(0,-0.55),(0,0.18))
             (lE,lH,rE,rH) = ((-0.68,-0.88),(-1.18,-1.32),(0.68,-0.88),(1.18,-1.32))
             (lK,lF,rK,rF) = ((-0.50,0.68),(-0.95,1.18),(0.50,0.68),(0.95,1.18))
+        case "rabbit":
+            (hd,nk,hp) = ((0,-0.95),(0,-0.55),(0,0.20))
+            (lE,lH,rE,rH) = ((-0.46,-0.78),(-0.24,-1.45),(0.46,-0.78),(0.24,-1.45))
+            (lK,lF,rK,rF) = ((-0.26,0.68),(-0.26,1.15),(0.26,0.68),(0.26,1.15))
+        case "trex":
+            (hd,nk,hp) = ((0.06,-0.55),(0,-0.22),(0,0.42))
+            (lE,lH,rE,rH) = ((-0.42,0.02),(-0.24,-0.16),(0.42,0.02),(0.24,-0.16))
+            (lK,lF,rK,rF) = ((-0.55,0.62),(-0.42,1.12),(0.55,0.62),(0.42,1.12))
+        case "rocket":
+            (hd,nk,hp) = ((0,-0.95),(0,-0.55),(0,0.20))
+            (lE,lH,rE,rH) = ((-0.48,-0.25),(-0.36,0.16),(0.38,-0.95),(0.32,-1.56))
+            (lK,lF,rK,rF) = ((-0.28,0.68),(-0.28,1.15),(0.28,0.68),(0.28,1.15))
+        case "robot":
+            (hd,nk,hp) = ((0,-0.95),(0,-0.55),(0,0.20))
+            (lE,lH,rE,rH) = ((-0.65,-0.55),(-0.65,-1.12),(0.65,-0.55),(0.65,0.02))
+            (lK,lF,rK,rF) = ((-0.32,0.68),(-0.32,1.15),(0.32,0.68),(0.32,1.15))
+        case "heart":
+            (hd,nk,hp) = ((0,-0.92),(0,-0.52),(0,0.20))
+            (lE,lH,rE,rH) = ((-0.68,-0.95),(-0.14,-1.40),(0.68,-0.95),(0.14,-1.40))
+            (lK,lF,rK,rF) = ((-0.26,0.68),(-0.26,1.15),(0.26,0.68),(0.26,1.15))
+        case "penguin":
+            (hd,nk,hp) = ((0,-0.95),(0,-0.55),(0,0.20))
+            (lE,lH,rE,rH) = ((-0.50,-0.12),(-0.82,0.22),(0.50,-0.12),(0.82,0.22))
+            (lK,lF,rK,rF) = ((-0.24,0.68),(-0.28,1.15),(0.24,0.68),(0.28,1.15))
         case "run":
             (hd,nk,hp) = ((0.10,-0.95),(0.05,-0.55),(-0.05,0.15))
             (lE,lH,rE,rH) = ((-0.52,-0.25),(-0.78,-0.55),(0.58,-0.32),(0.88,-0.72))
@@ -3205,12 +4568,17 @@ final class KidsGameScene: SKScene {
             jungleVineFallback = fb
         }
 
-        let mSquat = SKSpriteNode(texture: textures["momo_squat"] ?? textures["momo"])
-        mSquat.size = CGSize(width: 136, height: 136)
-        mSquat.zPosition = 19
-        mSquat.isHidden = true
-        gameLayer.addChild(mSquat)
-        jungleMomoSquat = mSquat
+        let momoRig = DancePuppetRig(
+            characterId: "momo",
+            baseSize: min(size.width, size.height) * 0.28,
+            phaseOffset: 0,
+            textures: textures,
+            fallbackTexture: textures["momo_squat"] ?? textures["momo"]
+        )
+        momoRig.root.zPosition = 19
+        momoRig.root.position = CGPoint(x: size.width * 0.16, y: size.height * 0.34)
+        gameLayer.addChild(momoRig.root)
+        jungleMomoRig = momoRig
 
         // 4) Bottom 3 Creamy Circular Move Badges:
         // Bottom-left 2 badges (제자리 달리기, 웅크리기) + Bottom-right 1 badge (점프 만세!)
@@ -3240,7 +4608,6 @@ final class KidsGameScene: SKScene {
             junglePhaseTimer = 6.2
             jungleVineNode?.isHidden = true
             jungleVineFallback?.isHidden = true
-            jungleMomoSquat?.isHidden = true
             junglePhasePill?.fillColor = UIColor(red: 0.14, green: 0.72, blue: 0.42, alpha: 0.94)
             setStickerLabel(junglePhaseLbl, text: "🏃 제자리 달리기!", fontSize: 21, strokeColor: UIColor(red: 0.08, green: 0.33, blue: 0.18, alpha: 1), strokeWidth: 6.0)
             if announce { onCallout?("🏃 신나게 제자리 달리기!!", 2.2) }
@@ -3251,7 +4618,6 @@ final class KidsGameScene: SKScene {
             jungleVineNode?.position = CGPoint(x: size.width * 0.5, y: size.height + 90)
             jungleVineFallback?.isHidden = false
             jungleVineFallback?.position = CGPoint(x: size.width * 0.5, y: size.height + 90)
-            jungleMomoSquat?.isHidden = false
             junglePhasePill?.fillColor = UIColor(red: 0.96, green: 0.56, blue: 0.12, alpha: 0.94)
             setStickerLabel(junglePhaseLbl, text: "🌿 숙여요! 웅크리기!", fontSize: 21, strokeColor: UIColor(red: 0.49, green: 0.18, blue: 0.07, alpha: 1), strokeWidth: 6.0)
             if announce { onCallout?("🌿 덩굴이 내려와요! 쏙 웅크리기!!", 2.4) }
@@ -3260,7 +4626,6 @@ final class KidsGameScene: SKScene {
             junglePhaseTimer = 6.8
             jungleVineNode?.isHidden = true
             jungleVineFallback?.isHidden = true
-            jungleMomoSquat?.isHidden = true
             junglePhasePill?.fillColor = UIColor(red: 0.95, green: 0.72, blue: 0.08, alpha: 0.95)
             setStickerLabel(junglePhaseLbl, text: "⭐ 점프 만세! 별 터치!", fontSize: 21, strokeColor: UIColor(red: 0.47, green: 0.21, blue: 0.06, alpha: 1), strokeWidth: 6.0)
             spawnJungleStars()
@@ -3342,6 +4707,7 @@ final class KidsGameScene: SKScene {
 
         // Phase logic
         let hMult = settings.speed.hitboxMult
+        var jungleRunningNow = false
         switch junglePhase {
         case .run:
             var runningNow = false
@@ -3351,12 +4717,13 @@ final class KidsGameScene: SKScene {
                     runningNow = true
                 }
             }
+            jungleRunningNow = runningNow
             if runningNow {
                 junglePhaseProgress = min(1.0, junglePhaseProgress + dt * 0.34)
                 if jungleRunCooldown <= 0 {
                     jungleRunCooldown = 0.58
                     score += 1
-                    onScore?(score)
+                    reportScore(score)
                     SoundEngine.shared.playClick()
                     spawnFloatingText("다다닥! +1", at: CGPoint(x: size.width * CGFloat.random(in: 0.32...0.68), y: size.height * 0.36), color: .systemGreen, big: false)
                 }
@@ -3364,7 +4731,7 @@ final class KidsGameScene: SKScene {
             if junglePhaseProgress >= 1.0 || junglePhaseTimer <= 0 {
                 if junglePhaseProgress >= 1.0 {
                     score += 6
-                    onScore?(score)
+                    reportScore(score)
                     SoundEngine.shared.playGoldenPop()
                     spawnBurst(at: CGPoint(x: size.width * 0.5, y: size.height * 0.48), color: .systemGreen, text: "정글 질주 성공!! +6", power: 2, angle: 0)
                 }
@@ -3381,7 +4748,6 @@ final class KidsGameScene: SKScene {
             if let fb = jungleVineFallback {
                 fb.position.y += (targetVineY - fb.position.y) * min(1, dt * 3.5)
             }
-            jungleMomoSquat?.position = CGPoint(x: size.width * 0.18, y: size.height * 0.34 + sin(t * 5) * 5)
 
             var squatting = false
             for p in players {
@@ -3398,12 +4764,12 @@ final class KidsGameScene: SKScene {
             if junglePhaseProgress >= 1.0 || junglePhaseTimer <= 0 {
                 if junglePhaseProgress >= 1.0 {
                     score += 8
-                    onScore?(score)
+                    reportScore(score)
                     SoundEngine.shared.playGoldenPop()
                     spawnBurst(at: CGPoint(x: size.width * 0.5, y: size.height * 0.45), color: .systemYellow, text: "덩굴 쏙 통과!! +8", power: 2, angle: 0)
                 } else {
                     score += 2
-                    onScore?(score)
+                    reportScore(score)
                     SoundEngine.shared.playBounce()
                     spawnFloatingText("다음엔 쏙 숙여요! +2", at: CGPoint(x: size.width * 0.5, y: size.height * 0.48), color: .systemOrange, big: false)
                 }
@@ -3435,7 +4801,7 @@ final class KidsGameScene: SKScene {
                     let pos = st.node.position
                     st.node.removeFromParent()
                     score += 5
-                    onScore?(score)
+                    reportScore(score)
                     SoundEngine.shared.playJumpStar()
                     spawnBurst(at: pos, color: .systemYellow, text: "점프 별 팡!! +5", power: 2, angle: -0.3)
                 } else {
@@ -3449,12 +4815,37 @@ final class KidsGameScene: SKScene {
             if jungleStars.isEmpty || junglePhaseTimer <= 0 {
                 if jungleStars.isEmpty {
                     score += 5
-                    onScore?(score)
+                    reportScore(score)
                     SoundEngine.shared.playMilestone()
                     spawnBurst(at: CGPoint(x: size.width * 0.5, y: size.height * 0.60), color: .systemYellow, text: "별 올클리어!! +5", power: 2, angle: 0)
                 }
                 enterJunglePhase(.run)
             }
+        }
+
+        // Update live 6-part Momo DancePuppetRig for Jungle Run / Squat / Star-Jump!
+        if let momoRig = jungleMomoRig {
+            let rigSize = min(size.width, size.height) * 0.28
+            momoRig.setBaseSize(rigSize)
+            let subAction: DanceRigSubAction
+            let targetY: CGFloat
+            let rigBpm: CGFloat
+            switch junglePhase {
+            case .run:
+                subAction = .run
+                targetY = size.height * 0.34
+                rigBpm = jungleRunningNow ? 148.0 : 112.0
+            case .squat:
+                subAction = .squat
+                targetY = size.height * 0.30
+                rigBpm = 128.0
+            case .jump:
+                subAction = .jump
+                targetY = size.height * 0.38
+                rigBpm = 128.0
+            }
+            momoRig.root.position = CGPoint(x: size.width * 0.16, y: targetY)
+            momoRig.update(dt: dt, state: DanceRigState(mode: .jungle, subAction: subAction, bpm: rigBpm))
         }
 
         // Layout & update Bottom 3 Creamy Circular Move Badges (pose_run, pose_squat, pose_jump sprites!):
@@ -3768,7 +5159,7 @@ final class KidsGameScene: SKScene {
                     let comboBonus = combo >= 4 ? 1 : 0
                     let gained = basePts + comboBonus
                     score += gained
-                    onScore?(score)
+                    reportScore(score)
                     SoundEngine.shared.playMoleBonk(combo: combo, isGold: moleHoles[i].isGold)
                     let col: UIColor = moleHoles[i].isGold ? .systemYellow : (moleHoles[i].isUpper ? .systemCyan : .systemGreen)
                     let txt = moleHoles[i].isGold ? "황금 하이파이브!! +\(gained)" : (moleHoles[i].isUpper ? "짝! 하이파이브! +\(gained)" : "톡! 발 터치! +\(gained)")
@@ -3813,20 +5204,30 @@ final class KidsGameScene: SKScene {
         balanceLogSprite = logSprite
 
         let charDim = min(size.width, size.height) * 0.28
-        let momo = SKSpriteNode(texture: textures["momo"])
-        momo.size = CGSize(width: charDim, height: charDim)
-        momo.position = CGPoint(x: settings.players == 2 ? -charDim * 0.44 : 0, y: charDim * 0.48)
-        momo.zPosition = 4
-        bridgeContainer.addChild(momo)
-        balanceMomo = momo
+        let momoRig = DancePuppetRig(
+            characterId: "momo",
+            baseSize: charDim,
+            phaseOffset: 0.0,
+            textures: textures,
+            fallbackTexture: textures["momo"]
+        )
+        momoRig.root.position = CGPoint(x: settings.players == 2 ? -charDim * 0.44 : 0, y: charDim * 0.48)
+        momoRig.root.zPosition = 4
+        bridgeContainer.addChild(momoRig.root)
+        balanceMomoRig = momoRig
 
         if settings.players == 2 {
-            let popo = SKSpriteNode(texture: textures["popo"])
-            popo.size = CGSize(width: charDim * 0.95, height: charDim * 0.95)
-            popo.position = CGPoint(x: charDim * 0.44, y: charDim * 0.48)
-            popo.zPosition = 4
-            bridgeContainer.addChild(popo)
-            balancePopo = popo
+            let popoRig = DancePuppetRig(
+                characterId: "popo",
+                baseSize: charDim * 0.95,
+                phaseOffset: 0.35,
+                textures: textures,
+                fallbackTexture: textures["popo"]
+            )
+            popoRig.root.position = CGPoint(x: charDim * 0.44, y: charDim * 0.48)
+            popoRig.root.zPosition = 4
+            bridgeContainer.addChild(popoRig.root)
+            balancePopoRig = popoRig
         }
 
         // 3) Live Green/Red Balance Gauge
@@ -4010,11 +5411,20 @@ final class KidsGameScene: SKScene {
         balanceBridgeNode?.zRotation = -bridgeAngle
         let slideX = bridgeAngle * 110
         let charDim = min(size.width, size.height) * 0.28
+        let normTilt = max(-1.0, min(1.0, bridgeAngle / 0.36))
+        let balState = DanceRigState(mode: .balance, bpm: 112.0, tilt: normTilt)
         if settings.players == 2 {
-            balanceMomo?.position = CGPoint(x: -charDim * 0.44 + slideX, y: charDim * 0.48 + abs(sin(t * 4.5)) * 5)
-            balancePopo?.position = CGPoint(x: charDim * 0.44 + slideX, y: charDim * 0.48 + abs(cos(t * 4.5)) * 5)
+            balanceMomoRig?.setBaseSize(charDim)
+            balanceMomoRig?.root.position = CGPoint(x: -charDim * 0.44 + slideX, y: charDim * 0.48)
+            balanceMomoRig?.update(dt: dt, state: balState)
+
+            balancePopoRig?.setBaseSize(charDim * 0.95)
+            balancePopoRig?.root.position = CGPoint(x: charDim * 0.44 + slideX, y: charDim * 0.48)
+            balancePopoRig?.update(dt: dt, state: balState)
         } else {
-            balanceMomo?.position = CGPoint(x: slideX, y: charDim * 0.48 + abs(sin(t * 4.5)) * 5)
+            balanceMomoRig?.setBaseSize(charDim)
+            balanceMomoRig?.root.position = CGPoint(x: slideX, y: charDim * 0.48)
+            balanceMomoRig?.update(dt: dt, state: balState)
         }
 
         // Animated wind lines
@@ -4038,7 +5448,6 @@ final class KidsGameScene: SKScene {
         let gaugePos = CGPoint(x: size.width * 0.5, y: size.height - 86)
         balanceGaugeBg?.position = gaugePos
         balanceGaugeSafe?.position = gaugePos
-        let normTilt = max(-1.0, min(1.0, bridgeAngle / 0.36))
         balanceGaugeNeedle?.position = CGPoint(x: gaugePos.x + normTilt * (gaugeW * 0.46), y: gaugePos.y)
         let isSafe = abs(bridgeAngle) < 0.20
         balanceGaugeNeedle?.fillColor = isSafe ? UIColor(red: 0.16, green: 0.96, blue: 0.52, alpha: 1) : .systemYellow
@@ -4059,7 +5468,7 @@ final class KidsGameScene: SKScene {
             if balancePointTick >= 0.85 {
                 balancePointTick = 0
                 score += 1
-                onScore?(score)
+                reportScore(score)
                 spawnFloatingText("균형 +1", at: CGPoint(x: size.width * 0.5 + slideX, y: size.height * 0.46), color: .systemGreen, big: false)
             }
         } else if abs(bridgeAngle) >= 0.34 && balanceWobbleCooldown <= 0 {
@@ -4107,7 +5516,7 @@ final class KidsGameScene: SKScene {
                 oneLegNextTimer = 14.0
                 balanceOneLegContainer?.isHidden = true
                 score += 10
-                onScore?(score)
+                reportScore(score)
                 SoundEngine.shared.playGoldenPop()
                 spawnBurst(at: CGPoint(x: size.width * 0.5, y: size.height * 0.54), color: .systemPink, text: "🦩 한 발 균형 성공!! +10", power: 2, angle: 0)
             } else if oneLegTimer <= 0 {
@@ -4145,7 +5554,7 @@ final class KidsGameScene: SKScene {
                 let pos = st.node.position
                 st.node.removeFromParent()
                 score += 5
-                onScore?(score)
+                reportScore(score)
                 SoundEngine.shared.playJumpStar()
                 spawnBurst(at: pos, color: .systemYellow, text: "균형 별 캐치!! +5", power: 2, angle: 0)
             } else if st.node.position.x > -st.radius * 2.5 && st.node.position.x < size.width + st.radius * 2.5 {
@@ -4487,25 +5896,23 @@ final class KidsGameScene: SKScene {
         let t = CGFloat(elapsed)
         let beatHz: CGFloat = 128.0 / 60.0
         let beatPulse: CGFloat = pow(max(0, cos(t * .pi * beatHz)), 4)
-        let beatIdx = Int(t * beatHz)
         let baseR = min(size.width, size.height) * 0.165
-        let lineup: [(String, CGFloat, CGFloat, CGFloat, Int, UIColor)] = [
-            ("momo", 0.24, 0.45, 0.92, 1, .systemCyan),
-            ("dino", 0.50, 0.49, 1.00, 0, .systemPink),
-            ("popo", 0.76, 0.45, 0.92, 1, .systemYellow),
+        let lineup: [(String, CGFloat, CGFloat, CGFloat, UIColor)] = [
+            ("momo", 0.24, 0.45, 0.92, .systemCyan),
+            ("dino", 0.50, 0.49, 1.00, .systemPink),
+            ("popo", 0.76, 0.45, 0.92, .systemYellow),
         ]
-        for (id, nx, ny, scaleMul, ph, col) in lineup {
-            guard let sp = dancerNodes[id], let ring = dancerRings[id] else { continue }
-            sp.isHidden = false
+        let outroState = DanceRigState(mode: .dance, bpm: 128.0, energy: 1.0, frozen: false, wiggling: false, routineOverride: 2)
+        for (id, nx, ny, scaleMul, col) in lineup {
+            guard let rig = dancerRigs[id], let ring = dancerRings[id] else { continue }
+            rig.root.isHidden = false
             ring.isHidden = false
             let cx = size.width * nx
             let cy = size.height * ny
             let r = baseR * scaleMul
-            let poseKey = (beatIdx + ph) % 2 == 0 ? "\(id)_dance1" : "\(id)_dance2"
-            if let tex = textures[poseKey], sp.texture !== tex { sp.texture = tex }
-            sp.size = CGSize(width: r * 2.25, height: r * 2.25)
-            sp.position = CGPoint(x: cx, y: cy + beatPulse * 18)
-            sp.zRotation = sin(t * beatHz * .pi + CGFloat(ph) * 1.5) * 0.11
+            rig.setBaseSize(r * 2.25)
+            rig.root.position = CGPoint(x: cx, y: cy)
+            rig.update(dt: dt, state: outroState)
             ring.position = CGPoint(x: cx, y: cy)
             ring.strokeColor = col
             ring.setScale(scaleMul * (1.0 + beatPulse * 0.12))
